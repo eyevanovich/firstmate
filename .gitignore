@@ -25,3 +25,4 @@ config/wedge-alarm
 .beads/proxieddb/
 /.agents/skills/beads
 /.pi
+/.codex
