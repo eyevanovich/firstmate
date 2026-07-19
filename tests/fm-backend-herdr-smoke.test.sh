@@ -36,6 +36,7 @@ cleanup_all() {
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+herdr_test_enter_neutral_cwd "$SESSION" || fail "could not enter the neutral Herdr server cwd"
 
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"

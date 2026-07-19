@@ -49,11 +49,12 @@ SESSION="fm-lab-respawn-idem-e2e-$$"
 export HERDR_SESSION="$SESSION"
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-respawn-idem.XXXXXX")
 cleanup_all() {
-  herdr_safe_stop_and_delete "$SESSION"
   rm -rf "$SCRATCH"
+  herdr_safe_stop_and_delete "$SESSION"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+herdr_test_enter_neutral_cwd "$SESSION" || fail "could not enter the neutral Herdr server cwd"
 
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
