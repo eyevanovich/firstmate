@@ -55,7 +55,7 @@ if [ "${1:-}" = api ]; then
       printf '%s\n' '[{"id":4,"name":"test","stage":"test","status":"success","allow_failure":false,"web_url":"https://gitlab.com/j/4"}]'
       ;;
     projects/kisscut-museum%2Fkisscut-platform)
-      printf '%s\n' '{"id":314,"default_branch":"main"}'
+      printf '%s\n' '{"id":314,"default_branch":"main","builds_access_level":"enabled"}'
       ;;
     *)
       printf 'unexpected endpoint: %s\n' "$endpoint" >&2

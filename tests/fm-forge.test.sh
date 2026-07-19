@@ -35,7 +35,7 @@ printf 'token=%s args=%s\n' "${GITLAB_TOKEN-unset}" "$*" >> "$FM_FAKE_GLAB_LOG"
 emit_mr_json() {
   local iid=$1 identity=${2:-exact} state=${3:-opened}
   local project_id=314 source_project_id=314 target_project_id=314
-  local source_branch=fm/fix target_branch=main merge_sha=null pipeline pipeline_sha
+  local source_branch=fm/fix target_branch=main merge_sha=null pipeline pipeline_sha head_pipeline
   case "$identity" in
     exact) ;;
     fork) source_project_id=2718 ;;
@@ -49,9 +49,15 @@ emit_mr_json() {
   fi
   pipeline=${FM_FAKE_PIPELINE_STATUS:-success}
   pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
-  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"head_pipeline":{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}}' \
+  if [ "${FM_FAKE_HEAD_PIPELINE:-current}" = none ]; then
+    head_pipeline=null
+  else
+    head_pipeline=$(printf '{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}' \
+      "$pipeline" "$pipeline_sha")
+  fi
+  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"head_pipeline":%s}' \
     "$iid" "$project_id" "$source_project_id" "$target_project_id" "$state" "$iid" \
-    "$source_branch" "$target_branch" "$merge_sha" "$pipeline" "$pipeline_sha"
+    "$source_branch" "$target_branch" "$merge_sha" "$head_pipeline"
 }
 
 case "${1:-} ${2:-}" in
@@ -90,7 +96,12 @@ if [ "${1:-}" = api ]; then
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5/pipelines\?*)
       pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
-      printf '[{"id":9,"status":"success","sha":"%s"}]\n' "$pipeline_sha"
+      if [ "${FM_FAKE_PIPELINE_LIST:-current}" = empty ]; then
+        printf '%s\n' '[]'
+      else
+        printf '[{"id":9,"status":"%s","sha":"%s"}]\n' \
+          "${FM_FAKE_PIPELINE_STATUS:-success}" "$pipeline_sha"
+      fi
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5)
       if [ -e "$FM_FAKE_MERGED_MARKER" ]; then
@@ -115,7 +126,8 @@ if [ "${1:-}" = api ]; then
       esac
       ;;
     projects/kisscut-museum%2Fkisscut-platform)
-      printf '%s\n' '{"id":314,"default_branch":"main"}'
+      printf '{"id":314,"default_branch":"main","builds_access_level":"%s"}\n' \
+        "${FM_FAKE_BUILDS_ACCESS_LEVEL:-enabled}"
       ;;
     *)
       printf 'unexpected fake API endpoint: %s\n' "$endpoint" >&2
@@ -377,6 +389,54 @@ test_checks_aggregate_without_dumping_successes() {
   pass "pipeline checks are aggregated and only actionable jobs are returned"
 }
 
+test_transient_empty_pipeline_list_blocks_merge() {
+  local out rc
+  reset_case
+  out=$(FM_FAKE_HEAD_PIPELINE=none FM_FAKE_PIPELINE_LIST=empty \
+    run_adapter mr-checks "$REPO" 5) || fail "empty pipeline state should be inspectable"
+  [ "$(jq -r '.checks.verdict' <<< "$out")" = pipeline_pending ] \
+    || fail "empty pipeline state was not treated as pending"
+
+  out=$(FM_FAKE_HEAD_PIPELINE=none FM_FAKE_PIPELINE_LIST=empty \
+    run_adapter mr-merge "$REPO" 5 --method squash 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "transient empty pipeline merge"
+  assert_contains "$out" "pipeline is not ready (pipeline_pending)" \
+    "transient empty pipeline refusal"
+  assert_no_grep 'mr merge 5' "$LOG" "empty pipeline list still invoked merge"
+  pass "an empty pipeline list remains pending during pipeline creation"
+}
+
+test_explicit_disabled_ci_allows_no_ci_merge() {
+  local out
+  reset_case
+  out=$(FM_FAKE_HEAD_PIPELINE=none FM_FAKE_PIPELINE_LIST=empty \
+    FM_FAKE_BUILDS_ACCESS_LEVEL=disabled run_adapter mr-checks "$REPO" 5) \
+    || fail "explicit no-CI state should be inspectable"
+  [ "$(jq -r '.checks.verdict' <<< "$out")" = no_ci ] \
+    || fail "disabled project CI was not recognized"
+
+  reset_case
+  out=$(FM_FAKE_HEAD_PIPELINE=none FM_FAKE_PIPELINE_LIST=empty \
+    FM_FAKE_BUILDS_ACCESS_LEVEL=disabled \
+    run_adapter mr-merge "$REPO" 5 --method squash) \
+    || fail "explicit no-CI project should merge"
+  [ "$(jq -r '.mr.state' <<< "$out")" = merged ] || fail "no-CI merge was not verified"
+  assert_grep 'mr merge 5' "$LOG" "explicit no-CI project did not invoke merge"
+  pass "only an independently disabled CI feature authorizes a no-CI merge"
+}
+
+test_running_pipeline_blocks_merge() {
+  local out rc
+  reset_case
+  out=$(FM_FAKE_PIPELINE_STATUS=running run_adapter mr-merge "$REPO" 5 --method squash 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "running pipeline merge"
+  assert_contains "$out" "pipeline is not ready (running)" "running pipeline refusal"
+  assert_no_grep 'mr merge 5' "$LOG" "running pipeline still invoked merge"
+  pass "a running GitLab pipeline blocks merge"
+}
+
 test_failing_pipeline_blocks_merge() {
   local out rc
   reset_case
@@ -402,6 +462,13 @@ test_stale_passing_pipeline_blocks_merge() {
 
 test_merge_is_sha_pinned_and_verified() {
   local out
+  reset_case
+  out=$(FM_FAKE_PIPELINE_STATUS=success run_adapter mr-checks "$REPO" 5) \
+    || fail "passing pipeline should be inspectable"
+  [ "$(jq -r '.checks.verdict' <<< "$out")" = passing ] || fail "passing verdict mismatch"
+  [ "$(jq -r '.pipeline.sha' <<< "$out")" = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ] \
+    || fail "passing pipeline was not bound to the current merge-request SHA"
+
   reset_case
   out=$(FM_FAKE_PIPELINE_STATUS=success run_adapter mr-merge "$REPO" 5 --method squash --delete-branch) \
     || fail "passing MR should merge"
@@ -463,6 +530,9 @@ test_mr_find_requires_one_exact_project_and_branch_match
 test_mr_create_reuses_only_one_exact_match
 test_lifecycle_rejects_mismatched_merge_request_identity
 test_checks_aggregate_without_dumping_successes
+test_transient_empty_pipeline_list_blocks_merge
+test_explicit_disabled_ci_allows_no_ci_merge
+test_running_pipeline_blocks_merge
 test_failing_pipeline_blocks_merge
 test_stale_passing_pipeline_blocks_merge
 test_merge_is_sha_pinned_and_verified
