@@ -437,6 +437,10 @@ content_in_default() {
 # only for genuinely unlanded work.
 work_is_landed() {
   local branch=$1
+  if [ -n "$PR_URL" ] && fm_pr_url_parse "$PR_URL" && [ "$FM_PR_FORGE" = gitlab ]; then
+    pr_is_merged "$branch"
+    return $?
+  fi
   pr_is_merged "$branch" && return 0
   content_in_default
 }

@@ -25,6 +25,8 @@ printf '%s\n' manual > "$HOME_DIR/config/backlog-backend"
 fm_git_init_commit "$REPO"
 git -C "$REPO" remote add origin git@gitlab.com:kisscut-museum/kisscut-platform.git
 git -C "$REPO" checkout -q -b fm/gitlab-x1
+DEFAULT_HEAD=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" commit -q --allow-empty -m 'task commit'
 fm_write_meta "$STATE/$ID.meta" \
   "window=fm-$ID" \
   "worktree=$REPO" \
@@ -75,6 +77,18 @@ exit 1
 SH
 chmod +x "$FAKEBIN/glab"
 
+REAL_GIT=$(command -v git)
+cat > "$FAKEBIN/git" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -C ] && [ "${2:-}" = "$FM_FAKE_REPO" ] \
+  && [ "${3:-}" = fetch ] && [ "${4:-}" = --quiet ] && [ "${5:-}" = origin ]; then
+  "$FM_REAL_GIT" -C "$FM_FAKE_REPO" update-ref refs/remotes/origin/main "$FM_FAKE_DEFAULT_HEAD"
+  exit $?
+fi
+exec "$FM_REAL_GIT" "$@"
+SH
+chmod +x "$FAKEBIN/git"
+
 cat > "$FAKEBIN/gh-axi" <<'SH'
 #!/usr/bin/env bash
 echo "gh-axi must not be used for GitLab" >&2
@@ -93,7 +107,8 @@ run_with_env() {
   FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$STATE" \
     FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_FAKE_GLAB_LOG="$LOG" \
     FM_FAKE_MERGED="$MERGED" FM_FAKE_HEAD="${FM_TEST_HEAD:-$HEAD_SHA}" \
-    FM_FAKE_TARGET="$TARGET_BRANCH" GITLAB_TOKEN=TEST_AMBIENT_TOKEN \
+    FM_FAKE_TARGET="$TARGET_BRANCH" FM_FAKE_REPO="$REPO" FM_REAL_GIT="$REAL_GIT" \
+    FM_FAKE_DEFAULT_HEAD="$DEFAULT_HEAD" GITLAB_TOKEN=TEST_AMBIENT_TOKEN \
     GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN OAUTH_TOKEN=TEST_OAUTH_TOKEN \
     GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN PATH="$FAKEBIN:$PATH" "$@"
 }
@@ -146,6 +161,17 @@ test_guarded_merge_uses_narrow_adapter() {
   pass "the guarded merge path delegates GitLab to the narrow adapter"
 }
 
+test_open_gitlab_review_refuses_tree_only_cleanup() {
+  local out rc
+  rm -f "$MERGED"
+  out=$(run_with_env "$ROOT/bin/fm-teardown.sh" "$ID" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "open GitLab review cleanup"
+  assert_contains "$out" "REFUSED" "open GitLab review cleanup refusal"
+  assert_present "$STATE/$ID.meta" "open GitLab review cleanup removed task metadata"
+  pass "recorded GitLab reviews require canonical merge proof for cleanup"
+}
+
 test_explicit_gitlab_merge_method_is_preserved() {
   local out
   : > "$LOG"
@@ -173,6 +199,7 @@ test_merged_gitlab_work_is_safe_to_clean() {
 }
 
 test_check_records_head_and_registers_custom_poll
+test_open_gitlab_review_refuses_tree_only_cleanup
 test_guarded_merge_uses_narrow_adapter
 test_explicit_gitlab_merge_method_is_preserved
 test_merged_gitlab_work_is_safe_to_clean
