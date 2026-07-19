@@ -441,9 +441,7 @@ cmd_mr_merge() {
     rebase) merge_args+=(--rebase) ;;
   esac
   [ "$delete_branch" = false ] || merge_args+=(--remove-source-branch)
-  env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN \
-    GLAB_NO_PROMPT=1 GLAB_CHECK_UPDATE=false NO_COLOR=1 GITLAB_HOST="$FM_FORGE_HOST" \
-    glab "${merge_args[@]}" >/dev/null
+  fm_forge_gitlab_glab "$FM_FORGE_HOST" "${merge_args[@]}" >/dev/null
   verify=$(mr_raw "$FM_FORGE_MR_IID")
   [ "$(jq -r '.state // empty' <<< "$verify")" = merged ] \
     || fail "merge request did not reach merged state"

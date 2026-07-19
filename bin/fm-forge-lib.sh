@@ -7,9 +7,8 @@
 # config/forge-hosts. Unsupported or ambiguous hosts fail before authentication.
 # User-supplied issue or merge-request content never selects a host or project.
 # Call fm_forge_repo_resolve <repo> before reading FM_FORGE_* globals.
-# GitLab API calls always pass the trusted host through glab's --hostname flag.
-# Ambient token variables are removed so only glab's stored host credential can
-# authenticate; changing a worktree remote cannot redirect an inherited token.
+# GitLab calls always use the trusted origin host and remove ambient personal and
+# CI token variables so only glab's stored host credential can authenticate.
 # shellcheck disable=SC2034 # Globals are consumed by scripts that source this library.
 
 FM_FORGE_KIND=
@@ -163,21 +162,25 @@ fm_forge_url_encode() {
   jq -rn --arg value "$1" '$value | @uri'
 }
 
-fm_forge_gitlab_auth() {
+fm_forge_gitlab_glab() {
   local host=$1
+  shift
   command -v glab >/dev/null 2>&1 || return 127
   env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN \
-    GLAB_NO_PROMPT=1 GLAB_CHECK_UPDATE=false NO_COLOR=1 \
-    glab auth status --hostname "$host" >/dev/null 2>&1
+    -u GLAB_ENABLE_CI_AUTOLOGIN -u CI_JOB_TOKEN \
+    GLAB_NO_PROMPT=1 GLAB_CHECK_UPDATE=false NO_COLOR=1 GITLAB_HOST="$host" \
+    glab "$@"
+}
+
+fm_forge_gitlab_auth() {
+  local host=$1
+  fm_forge_gitlab_glab "$host" auth status --hostname "$host" >/dev/null 2>&1
 }
 
 fm_forge_gitlab_api() {
   local host=$1 endpoint=$2
   shift 2
-  command -v glab >/dev/null 2>&1 || return 127
-  env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN \
-    GLAB_NO_PROMPT=1 GLAB_CHECK_UPDATE=false NO_COLOR=1 \
-    glab api "$endpoint" --hostname "$host" "$@"
+  fm_forge_gitlab_glab "$host" api "$endpoint" --hostname "$host" "$@"
 }
 
 fm_forge_gitlab_mr_url_parse_parts() {

@@ -23,6 +23,12 @@ git -C "$REPO" remote add origin git@gitlab.com:kisscut-museum/kisscut-platform.
 cat > "$FAKEBIN/glab" <<'SH'
 #!/usr/bin/env bash
 set -u
+for credential in GITLAB_TOKEN GITLAB_ACCESS_TOKEN OAUTH_TOKEN GLAB_ENABLE_CI_AUTOLOGIN CI_JOB_TOKEN; do
+  if [ "${!credential+x}" = x ]; then
+    printf 'inherited=%s args=%s\n' "$credential" "$*" >> "$FM_FAKE_GLAB_LOG"
+    exit 97
+  fi
+done
 printf 'token=%s args=%s\n' "${GITLAB_TOKEN-unset}" "$*" >> "$FM_FAKE_GLAB_LOG"
 case "${1:-} ${2:-}" in
   "auth status")
@@ -116,7 +122,9 @@ chmod +x "$FAKEBIN/gh"
 run_adapter() {
   PATH="$FAKEBIN:$PATH" FM_FAKE_GLAB_LOG="$LOG" FM_FAKE_GH_LOG="$GH_LOG" \
     FM_FAKE_MERGED_MARKER="$MERGED_MARKER" FM_FORGE_HOSTS_FILE="${FM_FORGE_HOSTS_FILE:-}" \
-    GITLAB_TOKEN=TEST_AMBIENT_TOKEN "$ADAPTER" "$@"
+    GITLAB_TOKEN=TEST_AMBIENT_TOKEN GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN \
+    OAUTH_TOKEN=TEST_OAUTH_TOKEN GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN \
+    "$ADAPTER" "$@"
 }
 
 reset_case() {

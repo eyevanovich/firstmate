@@ -32,6 +32,12 @@ fm_write_meta "$STATE/$ID.meta" \
 cat > "$FAKEBIN/glab" <<'SH'
 #!/usr/bin/env bash
 set -u
+for credential in GITLAB_TOKEN GITLAB_ACCESS_TOKEN OAUTH_TOKEN GLAB_ENABLE_CI_AUTOLOGIN CI_JOB_TOKEN; do
+  if [ "${!credential+x}" = x ]; then
+    printf 'inherited=%s args=%s\n' "$credential" "$*" >> "$FM_FAKE_GLAB_LOG"
+    exit 97
+  fi
+done
 printf 'token=%s args=%s\n' "${GITLAB_TOKEN-unset}" "$*" >> "$FM_FAKE_GLAB_LOG"
 if [ "${1:-} ${2:-}" = "auth status" ]; then
   [ "${3:-} ${4:-}" = "--hostname gitlab.com" ]
@@ -81,7 +87,8 @@ run_with_env() {
   FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$STATE" \
     FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_FAKE_GLAB_LOG="$LOG" \
     FM_FAKE_MERGED="$MERGED" FM_FAKE_HEAD="$HEAD_SHA" GITLAB_TOKEN=TEST_AMBIENT_TOKEN \
-    PATH="$FAKEBIN:$PATH" "$@"
+    GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN OAUTH_TOKEN=TEST_OAUTH_TOKEN \
+    GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN PATH="$FAKEBIN:$PATH" "$@"
 }
 
 test_check_records_head_and_registers_custom_poll() {
