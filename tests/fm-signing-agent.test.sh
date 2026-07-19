@@ -110,20 +110,22 @@ test_preflight_refuses_missing_or_disabled_signing() {
   pass "signing preflight refuses unavailable or implicitly disabled signing"
 }
 
-test_unsigned_repo_without_signing_config_is_unchanged() {
-  local dir home repo out
+test_unsigned_repo_without_signing_config_is_refused() {
+  local dir home repo out rc
   dir="$TMP/unsigned-noop"
   home="$dir/home"
   repo="$dir/repo"
   mkdir -p "$home/config" "$repo"
   git init -q "$repo"
   git -C "$repo" config commit.gpgsign false
-  out=$(FM_HOME="$home" "$HELPER" preflight "$repo" 2>&1) \
-    || fail "unsigned repo without a signing policy should remain supported"
-  [ -z "$out" ] || fail "unsigned no-op preflight should be silent: $out"
-  pass "repos without a signing policy remain a silent no-op"
+  out=$(FM_HOME="$home" "$HELPER" preflight "$repo" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "unsigned repo without signing config"
+  assert_contains "$out" "unsigned fallback requires explicit captain approval" \
+    "unsigned repo did not retain captain authority"
+  pass "repos without proven signing fail closed"
 }
 
 test_preflight_bridges_agent_into_isolated_commit
 test_preflight_refuses_missing_or_disabled_signing
-test_unsigned_repo_without_signing_config_is_unchanged
+test_unsigned_repo_without_signing_config_is_refused

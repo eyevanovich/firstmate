@@ -7,8 +7,7 @@
 #     When commit signing is enabled, verify the configured identity and agent,
 #     create a signed scratch commit with SSH_AUTH_SOCK removed, then configure
 #     the repo's local no-mistakes gate to use this script as gpg.ssh.program.
-#     A repo that does not require signing and has no signing-agent config is a
-#     no-op. An explicit signing disable while the config exists is refused;
+#     Signing must be enabled and proven. Missing or disabled signing is refused;
 #     only the captain may approve an unsigned fallback outside this helper.
 #
 #   fm-signing-agent.sh <ssh-keygen arguments...>
@@ -68,16 +67,10 @@ signing_required() {
       return 0
       ;;
     false)
-      if [ -e "$SIGNING_AGENT_CONFIG" ] || [ "$global" = true ]; then
-        fail "configured commit signing is disabled for $repo; unsigned fallback requires explicit captain approval"
-      fi
-      return 1
+      fail "commit signing is disabled for $repo; unsigned fallback requires explicit captain approval"
       ;;
     '')
-      if [ -e "$SIGNING_AGENT_CONFIG" ] || [ "$global" = true ]; then
-        fail "configured commit signing is not enabled for $repo; unsigned fallback requires explicit captain approval"
-      fi
-      return 1
+      fail "commit signing is not enabled for $repo; unsigned fallback requires explicit captain approval"
       ;;
     *)
       fail "cannot determine whether commit signing is required for $repo"

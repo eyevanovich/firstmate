@@ -35,7 +35,7 @@ printf 'token=%s args=%s\n' "${GITLAB_TOKEN-unset}" "$*" >> "$FM_FAKE_GLAB_LOG"
 emit_mr_json() {
   local iid=$1 identity=${2:-exact} state=${3:-opened}
   local project_id=314 source_project_id=314 target_project_id=314
-  local source_branch=fm/fix target_branch=main merge_sha=null pipeline pipeline_sha head_pipeline
+  local source_branch=fm/fix target_branch=${FM_FAKE_TARGET_BRANCH:-main} merge_sha=null pipeline pipeline_sha head_pipeline
   case "$identity" in
     exact) ;;
     fork) source_project_id=2718 ;;
@@ -155,11 +155,15 @@ SH
 chmod +x "$FAKEBIN/gh"
 
 run_adapter() {
+  local -a args=("$@")
+  if [ "${1:-}" = mr-merge ] && [ "${FM_TEST_NO_DEFAULT_SHA:-0}" != 1 ]; then
+    args+=(--sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+  fi
   PATH="$FAKEBIN:$PATH" FM_FAKE_GLAB_LOG="$LOG" FM_FAKE_GH_LOG="$GH_LOG" \
     FM_FAKE_MERGED_MARKER="$MERGED_MARKER" FM_FORGE_HOSTS_FILE="${FM_FORGE_HOSTS_FILE:-}" \
     GITLAB_TOKEN=TEST_AMBIENT_TOKEN GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN \
     OAUTH_TOKEN=TEST_OAUTH_TOKEN GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN \
-    "$ADAPTER" "$@"
+    "$ADAPTER" "${args[@]}"
 }
 
 reset_case() {
@@ -479,6 +483,52 @@ test_merge_is_sha_pinned_and_verified() {
   pass "GitLab merge pins the reviewed head and verifies the merged state"
 }
 
+test_merge_requires_the_reviewed_sha() {
+  local out rc
+  reset_case
+  out=$(FM_TEST_NO_DEFAULT_SHA=1 run_adapter mr-merge "$REPO" 5 --method squash 2>&1)
+  rc=$?
+  expect_code 2 "$rc" "merge without reviewed SHA"
+  assert_contains "$out" "reviewed head SHA is required" "missing reviewed SHA refusal"
+  assert_no_grep 'mr merge 5' "$LOG" "merge without reviewed SHA reached glab merge"
+
+  reset_case
+  out=$(FM_TEST_NO_DEFAULT_SHA=1 run_adapter mr-merge "$REPO" 5 --method squash \
+    --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "merge after reviewed head changed"
+  assert_contains "$out" "does not match the reviewed SHA" "changed reviewed head refusal"
+  assert_no_grep 'mr merge 5' "$LOG" "changed reviewed head reached glab merge"
+  pass "GitLab merge requires and rechecks the reviewed head SHA"
+}
+
+test_nondefault_target_is_preserved_across_lifecycle() {
+  local out
+  reset_case
+  out=$(FM_FAKE_TARGET_BRANCH=release run_adapter mr-view "$REPO" 5 --target release) \
+    || fail "non-default target view should succeed"
+  [ "$(jq -r '.mr.target_branch' <<< "$out")" = release ] || fail "view lost non-default target"
+
+  reset_case
+  out=$(FM_FAKE_TARGET_BRANCH=release run_adapter mr-find "$REPO" fm/fix --target release) \
+    || fail "non-default target lookup should succeed"
+  assert_grep 'target_branch=release' "$LOG" "lookup lost non-default target"
+
+  reset_case
+  FM_FAKE_TARGET_BRANCH=release run_adapter mr-checks "$REPO" 5 --target release >/dev/null \
+    || fail "non-default target checks should succeed"
+
+  reset_case
+  FM_FAKE_TARGET_BRANCH=release run_adapter mr-merge "$REPO" 5 --target release --method squash >/dev/null \
+    || fail "non-default target merge should succeed"
+
+  out=$(FM_FAKE_TARGET_BRANCH=release run_adapter mr-poll "$REPO" \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5' --target release) \
+    || fail "non-default target poll should succeed"
+  [ "$out" = merged ] || fail "non-default target poll lost target identity"
+  pass "non-default targets remain explicit through every lifecycle action"
+}
+
 test_poll_is_silent_until_merged() {
   local out
   reset_case
@@ -536,6 +586,8 @@ test_running_pipeline_blocks_merge
 test_failing_pipeline_blocks_merge
 test_stale_passing_pipeline_blocks_merge
 test_merge_is_sha_pinned_and_verified
+test_merge_requires_the_reviewed_sha
+test_nondefault_target_is_preserved_across_lifecycle
 test_poll_is_silent_until_merged
 test_non_network_remote_is_rejected
 test_malicious_remote_path_is_rejected

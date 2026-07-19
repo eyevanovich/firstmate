@@ -21,12 +21,13 @@
 #   fm-forge.sh mr-create <repo> --title <text> --source <branch>
 #     [--target <branch>] [--body-file <file>] [--draft]
 #     [--remove-source-branch]
-#   fm-forge.sh mr-view <repo> <iid|canonical-url>
-#   fm-forge.sh mr-find <repo> <source-branch>
-#   fm-forge.sh mr-checks <repo> <iid|canonical-url>
+#   fm-forge.sh mr-view <repo> <iid|canonical-url> [--target <branch>]
+#   fm-forge.sh mr-find <repo> <source-branch> [--target <branch>]
+#   fm-forge.sh mr-checks <repo> <iid|canonical-url> [--target <branch>]
 #   fm-forge.sh mr-merge <repo> <iid|canonical-url>
+#     --sha <reviewed-sha> [--target <branch>]
 #     [--method merge|squash|rebase] [--delete-branch]
-#   fm-forge.sh mr-poll <repo> <canonical-url>
+#   fm-forge.sh mr-poll <repo> <canonical-url> [--target <branch>]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,6 +114,14 @@ current_source_branch() {
   branch=$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
   git -C "$repo" check-ref-format --branch "$branch" >/dev/null 2>&1 || return 1
   printf '%s\n' "$branch"
+}
+
+expected_target() {
+  local repo=$1 target=$2
+  [ -n "$target" ] || target=$FM_GITLAB_DEFAULT_BRANCH
+  git -C "$repo" check-ref-format --branch "$target" >/dev/null 2>&1 \
+    || fail "target branch is invalid" 2
+  printf '%s\n' "$target"
 }
 
 mr_iid_from_json() {
@@ -357,19 +366,30 @@ cmd_issue_view() {
 }
 
 cmd_mr_view() {
-  local repo=$1 target=$2 raw source
+  local repo=$1 target=$2 expected='' raw source
+  shift 2
+  if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = --target ] || fail "invalid mr-view request" 2
+    expected=$2
+  fi
   resolve_mr_iid "$repo" "$target"
   require_gitlab_auth
   load_trusted_project || fail "trusted GitLab project identity is unavailable"
+  expected=$(expected_target "$repo" "$expected")
   source=$(current_source_branch "$repo") \
     || fail "checked-out source branch is unavailable"
-  raw=$(checked_mr_raw "$FM_FORGE_MR_IID" "$source" "$FM_GITLAB_DEFAULT_BRANCH") \
+  raw=$(checked_mr_raw "$FM_FORGE_MR_IID" "$source" "$expected") \
     || fail "merge-request identity does not match the trusted repository and branches"
   emit_mr "$raw"
 }
 
 cmd_mr_find() {
-  local repo=$1 branch=$2 pid encoded_source encoded_target raw found count iid checked_out
+  local repo=$1 branch=$2 expected='' pid encoded_source encoded_target raw found count iid checked_out
+  shift 2
+  if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = --target ] || fail "invalid mr-find request" 2
+    expected=$2
+  fi
   git -C "$repo" check-ref-format --branch "$branch" >/dev/null 2>&1 \
     || fail "source branch is invalid" 2
   checked_out=$(current_source_branch "$repo") \
@@ -379,9 +399,10 @@ cmd_mr_find() {
   require_gitlab_repo "$repo"
   require_gitlab_auth
   load_trusted_project || fail "trusted GitLab project identity is unavailable"
+  expected=$(expected_target "$repo" "$expected")
   pid=$(project_id)
   encoded_source=$(query_value "$branch")
-  encoded_target=$(query_value "$FM_GITLAB_DEFAULT_BRANCH")
+  encoded_target=$(query_value "$expected")
   raw=$(gitlab_api "projects/$pid/merge_requests?state=all&source_branch=$encoded_source&target_branch=$encoded_target&order_by=updated_at&sort=desc&per_page=2")
   count=$(jq -er 'if type == "array" then length else error("not an array") end' <<< "$raw") \
     || fail "merge-request search result is unavailable"
@@ -390,7 +411,7 @@ cmd_mr_find() {
   found=$(jq -c '.[0]' <<< "$raw")
   iid=$(mr_iid_from_json <<< "$found") \
     || fail "merge-request identity is unavailable"
-  mr_identity_valid "$found" "$iid" "$branch" "$FM_GITLAB_DEFAULT_BRANCH" \
+  mr_identity_valid "$found" "$iid" "$branch" "$expected" \
     || fail "merge-request identity does not match the trusted repository and branches"
   emit_mr "$found"
 }
@@ -493,17 +514,23 @@ cmd_mr_create() {
 }
 
 cmd_mr_checks() {
-  local repo=$1 target=$2 source
+  local repo=$1 target=$2 expected='' source
+  shift 2
+  if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = --target ] || fail "invalid mr-checks request" 2
+    expected=$2
+  fi
   resolve_mr_iid "$repo" "$target"
   require_gitlab_auth
   load_trusted_project || fail "trusted GitLab project identity is unavailable"
+  expected=$(expected_target "$repo" "$expected")
   source=$(current_source_branch "$repo") \
     || fail "checked-out source branch is unavailable"
-  mr_checks_json "$FM_FORGE_MR_IID" "$source" "$FM_GITLAB_DEFAULT_BRANCH"
+  mr_checks_json "$FM_FORGE_MR_IID" "$source" "$expected"
 }
 
 cmd_mr_merge() {
-  local repo=$1 target=$2 method=merge delete_branch=false raw state sha checks verdict verify source
+  local repo=$1 target=$2 method=merge delete_branch=false expected='' reviewed_sha='' raw state sha checks verdict verify source
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -513,26 +540,45 @@ cmd_mr_merge() {
         shift 2
         ;;
       --delete-branch) delete_branch=true; shift ;;
+      --target)
+        [ "$#" -ge 2 ] || fail "--target requires a value" 2
+        expected=$2
+        shift 2
+        ;;
+      --sha)
+        [ "$#" -ge 2 ] || fail "--sha requires a value" 2
+        reviewed_sha=$2
+        shift 2
+        ;;
       *) fail "unknown mr-merge argument: $1" 2 ;;
     esac
   done
   case "$method" in merge|squash|rebase) ;; *) fail "method must be merge, squash, or rebase" 2 ;; esac
+  case "$reviewed_sha" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+      [ "${#reviewed_sha}" -eq 40 ] || [ "${#reviewed_sha}" -eq 64 ] \
+        || fail "reviewed head SHA is invalid" 2
+      ;;
+    *) fail "reviewed head SHA is required" 2 ;;
+  esac
   resolve_mr_iid "$repo" "$target"
   require_gitlab_auth
   load_trusted_project || fail "trusted GitLab project identity is unavailable"
+  expected=$(expected_target "$repo" "$expected")
   source=$(current_source_branch "$repo") \
     || fail "checked-out source branch is unavailable"
-  raw=$(checked_mr_raw "$FM_FORGE_MR_IID" "$source" "$FM_GITLAB_DEFAULT_BRANCH") \
+  raw=$(checked_mr_raw "$FM_FORGE_MR_IID" "$source" "$expected") \
     || fail "merge-request identity does not match the trusted repository and branches"
   state=$(jq -r '.state // empty' <<< "$raw")
+  sha=$(jq -er '.sha | strings | select(test("^[0-9a-f]{40}$|^[0-9a-f]{64}$"))' <<< "$raw") \
+    || fail "merge-request head SHA is unavailable"
+  [ "$sha" = "$reviewed_sha" ] || fail "merge-request head does not match the reviewed SHA"
   if [ "$state" = merged ]; then
     emit_mr "$raw" true
     return 0
   fi
   [ "$state" = opened ] || fail "merge request is not open"
-  sha=$(jq -er '.sha | strings | select(test("^[0-9a-f]{40}$|^[0-9a-f]{64}$"))' <<< "$raw") \
-    || fail "merge-request head SHA is unavailable"
-  checks=$(mr_checks_json "$FM_FORGE_MR_IID" "$source" "$FM_GITLAB_DEFAULT_BRANCH")
+  checks=$(mr_checks_json "$FM_FORGE_MR_IID" "$source" "$expected")
   verdict=$(jq -r '.checks.verdict' <<< "$checks")
   case "$verdict" in
     passing|no_ci) ;;
@@ -547,20 +593,28 @@ cmd_mr_merge() {
   esac
   [ "$delete_branch" = false ] || merge_args+=(--remove-source-branch)
   fm_forge_gitlab_glab "$FM_FORGE_HOST" "${merge_args[@]}" >/dev/null
-  verify=$(checked_mr_raw "$FM_FORGE_MR_IID" "$source" "$FM_GITLAB_DEFAULT_BRANCH") \
+  verify=$(checked_mr_raw "$FM_FORGE_MR_IID" "$source" "$expected") \
     || fail "merged merge-request identity could not be verified"
+  [ "$(jq -r '.sha // empty' <<< "$verify")" = "$reviewed_sha" ] \
+    || fail "merged merge-request head does not match the reviewed SHA"
   [ "$(jq -r '.state // empty' <<< "$verify")" = merged ] \
     || fail "merge request did not reach merged state"
   emit_mr "$verify"
 }
 
 cmd_mr_poll() {
-  local repo=$1 url=$2 raw source
+  local repo=$1 url=$2 expected='' raw source
+  shift 2
+  if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = --target ] || return 0
+    expected=$2
+  fi
   fm_forge_gitlab_mr_url_parse "$repo" "$url" || exit 0
   fm_forge_gitlab_auth "$FM_FORGE_HOST" || exit 0
   load_trusted_project >/dev/null 2>&1 || exit 0
+  expected=$(expected_target "$repo" "$expected" 2>/dev/null) || exit 0
   source=$(current_source_branch "$repo") || exit 0
-  raw=$(checked_mr_raw "$FM_FORGE_MR_IID" "$source" "$FM_GITLAB_DEFAULT_BRANCH" 2>/dev/null) \
+  raw=$(checked_mr_raw "$FM_FORGE_MR_IID" "$source" "$expected" 2>/dev/null) \
     || exit 0
   if [ "$(jq -r '.state // empty' <<< "$raw" 2>/dev/null)" = merged ]; then
     printf '%s\n' merged

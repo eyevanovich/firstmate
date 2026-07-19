@@ -74,6 +74,12 @@ grep -qxF "pr=$URL" "$META" || {
   echo "error: PR metadata recording failed" >&2
   exit 1
 }
+PR_HEAD=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
+PR_TARGET=$(grep '^pr_target=' "$META" | tail -1 | cut -d= -f2- || true)
+if [ "$FORGE" = gitlab ] && ! fm_pr_head_valid "$PR_HEAD"; then
+  echo "error: reviewed GitLab merge-request head is unavailable" >&2
+  exit 1
+fi
 
 merge_args=()
 if ! caller_has_merge_method "$@"; then
@@ -106,6 +112,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$method" ] || method=squash
 case "$method" in merge|squash|rebase) ;; *) echo "error: invalid merge method" >&2; exit 2 ;; esac
-gitlab_args=(--method "$method")
+gitlab_args=(--method "$method" --sha "$PR_HEAD")
+[ -z "$PR_TARGET" ] || gitlab_args+=(--target "$PR_TARGET")
 [ "$delete_branch" -eq 0 ] || gitlab_args+=(--delete-branch)
 "$SCRIPT_DIR/fm-forge.sh" mr-merge "$WT" "$URL" "${gitlab_args[@]}"

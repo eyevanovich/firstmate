@@ -4,7 +4,7 @@
 # GitHub uses the byte-static canonical poll and private sidecar.
 # GitLab uses a hash-registered custom check whose quoted arguments are derived
 # only from the task's trusted origin and canonical merge-request URL.
-# Usage: fm-pr-check.sh <task-id> <pr-or-mr-url>
+# Usage: fm-pr-check.sh <task-id> <pr-or-mr-url> [--target <branch>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,7 +15,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 
-if [ "$#" -ne 2 ]; then
+if [ "$#" -ne 2 ] && { [ "$#" -ne 4 ] || [ "$3" != --target ]; }; then
   echo "error: invalid PR check request" >&2
   exit 2
 fi
@@ -30,6 +30,7 @@ FORGE=$FM_PR_FORGE
 OWNER=$FM_PR_OWNER
 REPO=$FM_PR_REPO
 NUMBER=$FM_PR_NUMBER
+PR_TARGET=${4:-}
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -60,10 +61,13 @@ case "$FORGE" in
       || { echo "error: task worktree is unavailable" >&2; exit 1; }
     fm_forge_gitlab_mr_url_parse "$WT" "$URL" \
       || { echo "error: merge-request URL does not match task origin" >&2; exit 1; }
-    if MR_JSON=$("$SCRIPT_DIR/fm-forge.sh" mr-view "$WT" "$URL" 2>/dev/null) \
+    MR_ARGS=()
+    [ -z "$PR_TARGET" ] || MR_ARGS=(--target "$PR_TARGET")
+    if MR_JSON=$("$SCRIPT_DIR/fm-forge.sh" mr-view "$WT" "$URL" "${MR_ARGS[@]+"${MR_ARGS[@]}"}" 2>/dev/null) \
       && REMOTE_HEAD=$(jq -er '.mr.sha | strings' <<< "$MR_JSON" 2>/dev/null) \
       && fm_pr_head_valid "$REMOTE_HEAD"; then
       PR_HEAD=$REMOTE_HEAD
+      PR_TARGET=$(jq -er '.mr.target_branch | strings' <<< "$MR_JSON" 2>/dev/null) || exit 1
     else
       echo "error: merge-request head is unavailable" >&2
       exit 1
@@ -91,12 +95,13 @@ STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
 META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-    pr=*|pr_head=*) ;;
+    pr=*|pr_head=*|pr_target=*) ;;
     *) printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
   esac
 done < "$META"
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
+[ -z "$PR_TARGET" ] || printf 'pr_target=%s\n' "$PR_TARGET" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
 fm_pr_private_file_valid "$META_TMP" 600 "$STATE_DEVICE" || exit 1
 fm_pr_metadata_identity_parse "$META_TMP" || exit 1
@@ -126,8 +131,8 @@ else
   done
   rm -f -- "$CHECK" "$TRUST" "$DATA_FILE" "$REGISTRATION" || exit 1
   CUSTOM_CHECK_TMP=$(mktemp "$STATE/.fm-gitlab-mr-check.XXXXXX") || exit 1
-  printf '#!/usr/bin/env bash\nexec %q mr-poll %q %q\n' \
-    "$SCRIPT_DIR/fm-forge.sh" "$WT" "$URL" > "$CUSTOM_CHECK_TMP" || exit 1
+  printf '#!/usr/bin/env bash\nexec %q mr-poll %q %q --target %q\n' \
+    "$SCRIPT_DIR/fm-forge.sh" "$WT" "$URL" "$PR_TARGET" > "$CUSTOM_CHECK_TMP" || exit 1
   chmod 0700 "$CUSTOM_CHECK_TMP" || exit 1
   fm_pr_private_file_valid "$CUSTOM_CHECK_TMP" 700 "$STATE_DEVICE" || exit 1
   fm_pr_regular_destination_on_device_or_absent "$CHECK" "$STATE_DEVICE" || exit 1

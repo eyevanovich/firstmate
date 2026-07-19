@@ -186,6 +186,7 @@ fm_pr_metadata_identity_parse() {
   FM_PR_META_OWNER=
   FM_PR_META_REPO=
   FM_PR_META_NUMBER=
+  FM_PR_META_TARGET=
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   [ "$(fm_pr_file_link_count "$file")" = 1 ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
@@ -206,6 +207,13 @@ fm_pr_metadata_identity_parse() {
         if [ "$seen_pr" -eq 1 ]; then
           value=${line#pr_head=}
           fm_pr_head_valid "$value" || post_pr_invalid=1
+        fi
+        ;;
+      pr_target=*)
+        if [ "$seen_pr" -eq 1 ]; then
+          value=${line#pr_target=}
+          git check-ref-format --branch "$value" >/dev/null 2>&1 || post_pr_invalid=1
+          FM_PR_META_TARGET=$value
         fi
         ;;
       x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)

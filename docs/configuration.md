@@ -104,13 +104,13 @@ See [`wedge-alarm.md`](wedge-alarm.md) for the channel reference and macOS verif
 
 ## Signed no-mistakes fixes (config/signing-agent)
 
-When effective Git config enables SSH commit signing, local gitignored `config/signing-agent` contains exactly one absolute path to the selected signing agent's Unix socket.
+Local gitignored `config/signing-agent` contains exactly one absolute path to the selected signing agent's Unix socket.
 The file contains no key or credential and is inherited by secondmate homes on the same machine.
 Immediately before a no-mistakes run, the generated ship instructions run `bin/fm-signing-agent.sh preflight <repo>`.
 The preflight verifies that the configured socket is live and owned by the current user, that the agent holds `user.signingkey`, and that an isolated scratch repository can create a signed commit with ambient `SSH_AUTH_SOCK` removed.
 Only after that proof succeeds does it configure the repository's local no-mistakes bare gate to use the same tracked script as `gpg.ssh.program`; wrapper mode reads the explicit socket and execs `ssh-keygen`, so fix commits do not depend on the daemon's stale or missing ambient agent path.
 If signing is enabled but the socket, key, or gate is unavailable, the preflight stops before review work begins.
-If signing is explicitly disabled while a signing-agent configuration or global signing requirement exists, it refuses rather than silently producing unsigned commits; an unsigned fallback remains a security-sensitive captain decision outside this helper.
+If signing is absent, disabled, or cannot be proven, it refuses rather than silently producing unsigned commits; an unsigned fallback remains a security-sensitive captain decision outside this helper.
 
 ## Gate defaults (.no-mistakes.yaml)
 
