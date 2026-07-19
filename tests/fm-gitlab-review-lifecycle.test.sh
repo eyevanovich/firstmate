@@ -9,6 +9,7 @@ set -u
 fm_git_identity fmtest fmtest@example.invalid
 
 TMP=$(fm_test_tmproot fm-gitlab-review-tests)
+export GIT_CONFIG_GLOBAL=/dev/null
 HOME_DIR="$TMP/home"
 STATE="$HOME_DIR/state"
 REPO="$TMP/repo"
@@ -16,6 +17,7 @@ FAKEBIN=$(fm_fakebin "$TMP")
 LOG="$TMP/glab.log"
 MERGED="$TMP/merged"
 URL='https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5'
+TARGET_BRANCH=release
 ID=gitlab-x1
 
 mkdir -p "$STATE" "$HOME_DIR/config"
@@ -49,7 +51,7 @@ if [ "${1:-}" = api ]; then
   case "$endpoint" in
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5)
       if [ -e "$FM_FAKE_MERGED" ]; then state=merged; else state=opened; fi
-      printf '{"iid":5,"project_id":314,"source_project_id":314,"target_project_id":314,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"fm/gitlab-x1","target_branch":"main","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"%s","merge_commit_sha":null,"head_pipeline":{"id":9,"status":"success","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$FM_FAKE_HEAD" "$FM_FAKE_HEAD"
+      printf '{"iid":5,"project_id":314,"source_project_id":314,"target_project_id":314,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"fm/gitlab-x1","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"%s","merge_commit_sha":null,"head_pipeline":{"id":9,"status":"success","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$FM_FAKE_TARGET" "$FM_FAKE_HEAD" "$FM_FAKE_HEAD"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/pipelines/9/jobs\?*)
       printf '%s\n' '[{"id":4,"name":"test","stage":"test","status":"success","allow_failure":false,"web_url":"https://gitlab.com/j/4"}]'
@@ -90,7 +92,8 @@ HEAD_SHA=$(git -C "$REPO" rev-parse HEAD)
 run_with_env() {
   FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$STATE" \
     FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_FAKE_GLAB_LOG="$LOG" \
-    FM_FAKE_MERGED="$MERGED" FM_FAKE_HEAD="$HEAD_SHA" GITLAB_TOKEN=TEST_AMBIENT_TOKEN \
+    FM_FAKE_MERGED="$MERGED" FM_FAKE_HEAD="${FM_TEST_HEAD:-$HEAD_SHA}" \
+    FM_FAKE_TARGET="$TARGET_BRANCH" GITLAB_TOKEN=TEST_AMBIENT_TOKEN \
     GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN OAUTH_TOKEN=TEST_OAUTH_TOKEN \
     GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN PATH="$FAKEBIN:$PATH" "$@"
 }
@@ -99,12 +102,14 @@ test_check_records_head_and_registers_custom_poll() {
   local out mode
   : > "$LOG"
   rm -f "$MERGED"
-  out=$(run_with_env "$ROOT/bin/fm-pr-check.sh" "$ID" "$URL" 2>/dev/null) \
+  out=$(run_with_env "$ROOT/bin/fm-pr-check.sh" "$ID" "$URL" --target "$TARGET_BRANCH" 2>/dev/null) \
     || fail "GitLab review check should arm"
   [ "$out" = "armed: state/$ID.check.sh" ] || fail "unexpected arm output: $out"
   assert_grep "pr=$URL" "$STATE/$ID.meta" "GitLab MR URL was not recorded"
   assert_grep "pr_head=$HEAD_SHA" "$STATE/$ID.meta" \
     "GitLab reviewed head was not recorded"
+  assert_grep "pr_target=$TARGET_BRANCH" "$STATE/$ID.meta" \
+    "GitLab non-default target was not recorded"
   assert_present "$STATE/$ID.check.sh" "GitLab custom poll was not published"
   assert_present "$STATE/$ID.check-trust" "GitLab custom poll was not authenticated"
   assert_absent "$STATE/$ID.pr-poll" "GitLab should not publish the GitHub poll sidecar"
@@ -119,9 +124,17 @@ test_check_records_head_and_registers_custom_poll() {
 }
 
 test_guarded_merge_uses_narrow_adapter() {
-  local out
+  local out changed rc
   : > "$LOG"
   rm -f "$MERGED"
+  changed=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  out=$(FM_TEST_HEAD="$changed" run_with_env "$ROOT/bin/fm-pr-merge.sh" "$ID" "$URL" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "changed GitLab head before merge"
+  assert_contains "$out" "does not match the reviewed SHA" "changed reviewed head refusal"
+  assert_grep "pr_head=$HEAD_SHA" "$STATE/$ID.meta" "reviewed head was overwritten"
+  assert_no_grep "pr_head=$changed" "$STATE/$ID.meta" "changed head was adopted as reviewed"
+
   out=$(run_with_env "$ROOT/bin/fm-pr-merge.sh" "$ID" "$URL" 2>/dev/null) \
     || fail "guarded GitLab merge should succeed"
   assert_grep "mr merge 5 --repo kisscut-museum/kisscut-platform --yes --auto-merge=false --sha $HEAD_SHA --squash" \

@@ -69,13 +69,32 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
 fi
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 
-"$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
+PR_HEAD=
+PR_TARGET=
+if [ "$FORGE" = gitlab ] && grep -q '^pr=' "$META"; then
+  fm_pr_metadata_identity_parse "$META" || {
+    echo "error: recorded PR metadata is invalid" >&2
+    exit 1
+  }
+  [ "$FM_PR_META_URL" = "$URL" ] || {
+    echo "error: recorded PR does not match the merge request" >&2
+    exit 1
+  }
+  PR_HEAD=$FM_PR_META_HEAD
+  PR_TARGET=$FM_PR_META_TARGET
+else
+  "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
+  fm_pr_metadata_identity_parse "$META" || {
+    echo "error: PR metadata recording failed" >&2
+    exit 1
+  }
+  PR_HEAD=$FM_PR_META_HEAD
+  PR_TARGET=$FM_PR_META_TARGET
+fi
 grep -qxF "pr=$URL" "$META" || {
   echo "error: PR metadata recording failed" >&2
   exit 1
 }
-PR_HEAD=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
-PR_TARGET=$(grep '^pr_target=' "$META" | tail -1 | cut -d= -f2- || true)
 if [ "$FORGE" = gitlab ] && ! fm_pr_head_valid "$PR_HEAD"; then
   echo "error: reviewed GitLab merge-request head is unavailable" >&2
   exit 1

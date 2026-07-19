@@ -502,6 +502,17 @@ test_merge_requires_the_reviewed_sha() {
   pass "GitLab merge requires and rechecks the reviewed head SHA"
 }
 
+test_checks_require_the_reviewed_sha() {
+  local out rc
+  reset_case
+  out=$(run_adapter mr-checks "$REPO" 5 \
+    --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "checks after reviewed head changed"
+  assert_contains "$out" "does not match the reviewed SHA" "changed-head checks refusal"
+  pass "GitLab checks remain pinned to the reviewed head SHA"
+}
+
 test_nondefault_target_is_preserved_across_lifecycle() {
   local out
   reset_case
@@ -587,6 +598,7 @@ test_failing_pipeline_blocks_merge
 test_stale_passing_pipeline_blocks_merge
 test_merge_is_sha_pinned_and_verified
 test_merge_requires_the_reviewed_sha
+test_checks_require_the_reviewed_sha
 test_nondefault_target_is_preserved_across_lifecycle
 test_poll_is_silent_until_merged
 test_non_network_remote_is_rejected

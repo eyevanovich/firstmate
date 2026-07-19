@@ -181,11 +181,12 @@ fm_pr_regular_destination_on_device_or_absent() {
 }
 
 fm_pr_metadata_identity_parse() {
-  local file=$1 line value pr_count=0 seen_pr=0 post_pr_invalid=0
+  local file=$1 line value pr_count=0 head_count=0 target_count=0 seen_pr=0 post_pr_invalid=0
   FM_PR_META_URL=
   FM_PR_META_OWNER=
   FM_PR_META_REPO=
   FM_PR_META_NUMBER=
+  FM_PR_META_HEAD=
   FM_PR_META_TARGET=
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   [ "$(fm_pr_file_link_count "$file")" = 1 ] || return 1
@@ -204,12 +205,15 @@ fm_pr_metadata_identity_parse() {
         seen_pr=1
         ;;
       pr_head=*)
+        head_count=$((head_count + 1))
         if [ "$seen_pr" -eq 1 ]; then
           value=${line#pr_head=}
           fm_pr_head_valid "$value" || post_pr_invalid=1
+          FM_PR_META_HEAD=$value
         fi
         ;;
       pr_target=*)
+        target_count=$((target_count + 1))
         if [ "$seen_pr" -eq 1 ]; then
           value=${line#pr_target=}
           git check-ref-format --branch "$value" >/dev/null 2>&1 || post_pr_invalid=1
@@ -224,6 +228,8 @@ fm_pr_metadata_identity_parse() {
     esac
   done < "$file"
   [ "$pr_count" -eq 1 ] || return 1
+  [ "$head_count" -le 1 ] || return 1
+  [ "$target_count" -le 1 ] || return 1
   [ "$post_pr_invalid" -eq 0 ] || return 1
   [ -n "$FM_PR_META_URL" ]
 }

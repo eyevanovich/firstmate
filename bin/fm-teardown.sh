@@ -122,6 +122,14 @@ if [ "$BACKEND" = orca ]; then
 fi
 HOME_PATH=$(grep '^home=' "$META" | cut -d= -f2- || true)
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
+PR_TARGET=
+if [ -n "$PR_URL" ]; then
+  fm_pr_metadata_identity_parse "$META" || {
+    echo "error: recorded PR metadata is invalid" >&2
+    exit 1
+  }
+  PR_TARGET=$FM_PR_META_TARGET
+fi
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
 # (/tmp/fm-<id>/); absent for tasks spawned before that change, so tolerate empty.
 TASK_TMP=$(grep '^tasktmp=' "$META" | cut -d= -f2- || true)
@@ -264,7 +272,11 @@ pr_number_from_branch() {
   local branch=$1 out n
   [ -n "$branch" ] && [ "$branch" != HEAD ] || return 1
   if fm_forge_repo_resolve "$WT" && [ "$FM_FORGE_KIND" = gitlab ]; then
-    out=$("$SCRIPT_DIR/fm-forge.sh" mr-find "$WT" "$branch" 2>/dev/null) || return 1
+    if [ -n "$PR_TARGET" ]; then
+      out=$("$SCRIPT_DIR/fm-forge.sh" mr-find "$WT" "$branch" --target "$PR_TARGET" 2>/dev/null) || return 1
+    else
+      out=$("$SCRIPT_DIR/fm-forge.sh" mr-find "$WT" "$branch" 2>/dev/null) || return 1
+    fi
     n=$(jq -er '.mr.iid | numbers' <<< "$out" 2>/dev/null) || return 1
   else
     out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
@@ -366,7 +378,11 @@ pr_is_merged() {
   fi
   case "$forge" in
     gitlab)
-      view=$("$SCRIPT_DIR/fm-forge.sh" mr-view "$WT" "$target" 2>/dev/null) || return 1
+      if [ -n "$PR_TARGET" ]; then
+        view=$("$SCRIPT_DIR/fm-forge.sh" mr-view "$WT" "$target" --target "$PR_TARGET" 2>/dev/null) || return 1
+      else
+        view=$("$SCRIPT_DIR/fm-forge.sh" mr-view "$WT" "$target" 2>/dev/null) || return 1
+      fi
       state=$(jq -er '.mr.state | strings' <<< "$view" 2>/dev/null) || return 1
       head=$(jq -er '.mr.sha | strings' <<< "$view" 2>/dev/null) || return 1
       ;;

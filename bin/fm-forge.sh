@@ -23,7 +23,8 @@
 #     [--remove-source-branch]
 #   fm-forge.sh mr-view <repo> <iid|canonical-url> [--target <branch>]
 #   fm-forge.sh mr-find <repo> <source-branch> [--target <branch>]
-#   fm-forge.sh mr-checks <repo> <iid|canonical-url> [--target <branch>]
+#   fm-forge.sh mr-checks <repo> <iid|canonical-url>
+#     [--target <branch>] [--sha <reviewed-sha>]
 #   fm-forge.sh mr-merge <repo> <iid|canonical-url>
 #     --sha <reviewed-sha> [--target <branch>]
 #     [--method merge|squash|rebase] [--delete-branch]
@@ -248,12 +249,14 @@ mr_raw() {
 }
 
 mr_checks_json() {
-  local iid=$1 source=$2 target=$3 mr mr_sha pipeline_id pipeline_status pipelines pipeline_count=0 jobs pid
+  local iid=$1 source=$2 target=$3 reviewed_sha=${4:-} mr mr_sha pipeline_id pipeline_status pipelines pipeline_count=0 jobs pid
   pid=$(project_id)
   mr=$(checked_mr_raw "$iid" "$source" "$target") \
     || fail "merge-request identity does not match the trusted repository and branches"
   mr_sha=$(jq -er '.sha | strings | select(test("^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"))' <<< "$mr") \
     || fail "merge-request head SHA is unavailable"
+  [ -z "$reviewed_sha" ] || [ "$mr_sha" = "$reviewed_sha" ] \
+    || fail "merge-request head does not match the reviewed SHA"
   pipeline_id=$(jq -r --arg sha "$mr_sha" \
     '.head_pipeline | select(.sha == $sha) | .id // empty' <<< "$mr")
   pipeline_status=$(jq -r --arg sha "$mr_sha" \
@@ -514,19 +517,30 @@ cmd_mr_create() {
 }
 
 cmd_mr_checks() {
-  local repo=$1 target=$2 expected='' source
+  local repo=$1 target=$2 expected='' reviewed_sha='' source
   shift 2
-  if [ "$#" -gt 0 ]; then
-    [ "$#" -eq 2 ] && [ "$1" = --target ] || fail "invalid mr-checks request" 2
-    expected=$2
-  fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target)
+        [ "$#" -ge 2 ] || fail "--target requires a value" 2
+        expected=$2
+        shift 2
+        ;;
+      --sha)
+        [ "$#" -ge 2 ] || fail "--sha requires a value" 2
+        reviewed_sha=$2
+        shift 2
+        ;;
+      *) fail "invalid mr-checks request" 2 ;;
+    esac
+  done
   resolve_mr_iid "$repo" "$target"
   require_gitlab_auth
   load_trusted_project || fail "trusted GitLab project identity is unavailable"
   expected=$(expected_target "$repo" "$expected")
   source=$(current_source_branch "$repo") \
     || fail "checked-out source branch is unavailable"
-  mr_checks_json "$FM_FORGE_MR_IID" "$source" "$expected"
+  mr_checks_json "$FM_FORGE_MR_IID" "$source" "$expected" "$reviewed_sha"
 }
 
 cmd_mr_merge() {
@@ -578,7 +592,7 @@ cmd_mr_merge() {
     return 0
   fi
   [ "$state" = opened ] || fail "merge request is not open"
-  checks=$(mr_checks_json "$FM_FORGE_MR_IID" "$source" "$expected")
+  checks=$(mr_checks_json "$FM_FORGE_MR_IID" "$source" "$expected" "$reviewed_sha")
   verdict=$(jq -r '.checks.verdict' <<< "$checks")
   case "$verdict" in
     passing|no_ci) ;;
