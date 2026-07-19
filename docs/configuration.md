@@ -257,6 +257,7 @@ A registered GitLab clone adds `glab`, `jq`, and successful `glab auth status --
 A home with no clone on a forge is not asked to install or authenticate that forge's tools.
 Before an empty home or a home without GitHub projects starts a GitHub add/create operation, `bin/fm-bootstrap.sh check-forge github` applies the same `gh`, `gh-axi`, and authentication diagnostics and exits non-zero until all three are ready.
 The narrow `bin/fm-forge.sh` GitLab adapter derives host and project only from the clone's origin, removes ambient GitLab token variables, calls `glab api --hostname` with that trusted host and the credential stored by `glab auth login`, and emits compact JSON for issues, merge requests, and pipelines.
+Before creating, reusing, viewing, checking, merging, or polling a merge request, it requires the trusted numeric project identity plus the exact source and target branches expected from the local task and origin project.
 It deliberately exposes no raw API, project deletion, secret mutation, or repository-content write surface.
 GitLab merge polling uses a hash-registered custom check, while GitHub retains the canonical byte-static PR poll.
 The per-backend delta is required only for the backend resolved from `FM_BACKEND`, then `config/backend`, then runtime auto-detection, then default `tmux`, so a home is never told to install a tool an inactive backend or feature would need.

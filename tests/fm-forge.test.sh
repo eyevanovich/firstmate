@@ -19,6 +19,7 @@ MERGED_MARKER="$TMP/merged"
 
 fm_git_init_commit "$REPO"
 git -C "$REPO" remote add origin git@gitlab.com:kisscut-museum/kisscut-platform.git
+git -C "$REPO" checkout -q -b fm/fix
 
 cat > "$FAKEBIN/glab" <<'SH'
 #!/usr/bin/env bash
@@ -30,6 +31,29 @@ for credential in GITLAB_TOKEN GITLAB_ACCESS_TOKEN OAUTH_TOKEN GLAB_ENABLE_CI_AU
   fi
 done
 printf 'token=%s args=%s\n' "${GITLAB_TOKEN-unset}" "$*" >> "$FM_FAKE_GLAB_LOG"
+
+emit_mr_json() {
+  local iid=$1 identity=${2:-exact} state=${3:-opened}
+  local project_id=314 source_project_id=314 target_project_id=314
+  local source_branch=fm/fix target_branch=main merge_sha=null pipeline pipeline_sha
+  case "$identity" in
+    exact) ;;
+    fork) source_project_id=2718 ;;
+    wrong_project) target_project_id=2718 ;;
+    wrong_source) source_branch=fm/other ;;
+    wrong_target) target_branch=release ;;
+    *) return 1 ;;
+  esac
+  if [ "$state" = merged ]; then
+    merge_sha='"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"'
+  fi
+  pipeline=${FM_FAKE_PIPELINE_STATUS:-success}
+  pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"head_pipeline":{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}}' \
+    "$iid" "$project_id" "$source_project_id" "$target_project_id" "$state" "$iid" \
+    "$source_branch" "$target_branch" "$merge_sha" "$pipeline" "$pipeline_sha"
+}
+
 case "${1:-} ${2:-}" in
   "auth status")
     [ "${FM_FAKE_AUTH_OK:-1}" = 1 ]
@@ -51,11 +75,18 @@ if [ "${1:-}" = api ]; then
       printf '{"iid":7,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","description":"%s","labels":["bug"],"author":{"username":"ivan"},"assignees":[{"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z"}\n' "$long"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests\?*)
-      if [[ "$endpoint" == *source_branch=missing* ]]; then
+      scenario=${FM_FAKE_MR_LIST_SCENARIO:-exact}
+      if [[ "$endpoint" == *source_branch=missing* ]] || [ "$scenario" = none ]; then
         printf '%s\n' '[]'
+      elif [ "$scenario" = ambiguous ]; then
+        printf '[%s,%s]\n' "$(emit_mr_json 5 exact)" "$(emit_mr_json 6 exact)"
       else
-        printf '%s\n' '[{"iid":5,"title":"Ship fix","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"fm/fix","target_branch":"main","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":null,"head_pipeline":{"id":9,"status":"success","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","web_url":"https://gitlab.com/p/9"}}]'
+        printf '[%s]\n' "$(emit_mr_json 5 "$scenario")"
       fi
+      ;;
+    projects/kisscut-museum%2Fkisscut-platform/merge_requests)
+      emit_mr_json 5 "${FM_FAKE_CREATED_MR_IDENTITY:-exact}"
+      printf '\n'
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5/pipelines\?*)
       pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
@@ -64,19 +95,11 @@ if [ "${1:-}" = api ]; then
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5)
       if [ -e "$FM_FAKE_MERGED_MARKER" ]; then
         state=merged
-        merge_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       else
         state=${FM_FAKE_MR_STATE:-opened}
-        merge_sha=null
       fi
-      pipeline=${FM_FAKE_PIPELINE_STATUS:-success}
-      pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
-      if [ "$merge_sha" = null ]; then
-        merge_json=null
-      else
-        merge_json=\"$merge_sha\"
-      fi
-      printf '{"iid":5,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"fm/fix","target_branch":"main","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"head_pipeline":{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$merge_json" "$pipeline" "$pipeline_sha"
+      emit_mr_json 5 "${FM_FAKE_MR_IDENTITY_SCENARIO:-exact}" "$state"
+      printf '\n'
       ;;
     projects/kisscut-museum%2Fkisscut-platform/pipelines/9/jobs\?*)
       case "${FM_FAKE_PIPELINE_STATUS:-success}" in
@@ -92,7 +115,7 @@ if [ "${1:-}" = api ]; then
       esac
       ;;
     projects/kisscut-museum%2Fkisscut-platform)
-      printf '%s\n' '{"default_branch":"main"}'
+      printf '%s\n' '{"id":314,"default_branch":"main"}'
       ;;
     *)
       printf 'unexpected fake API endpoint: %s\n' "$endpoint" >&2
@@ -248,6 +271,101 @@ test_mr_body_file_cannot_read_outside_worktree() {
   pass "merge-request body files cannot exfiltrate files outside the worktree"
 }
 
+test_mr_find_requires_one_exact_project_and_branch_match() {
+  local scenario out rc
+  reset_case
+  out=$(run_adapter mr-find "$REPO" fm/fix) || fail "exact merge-request lookup should succeed"
+  [ "$(jq -r '.mr.iid' <<< "$out")" -eq 5 ] || fail "exact merge-request IID mismatch"
+  assert_grep 'source_branch=fm%2Ffix&target_branch=main' "$LOG" \
+    "merge-request lookup did not constrain both branches"
+
+  for scenario in fork wrong_project wrong_target; do
+    reset_case
+    out=$(FM_FAKE_MR_LIST_SCENARIO="$scenario" run_adapter mr-find "$REPO" fm/fix 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "$scenario merge-request lookup"
+    assert_contains "$out" "identity does not match" "$scenario merge-request refusal"
+  done
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=ambiguous run_adapter mr-find "$REPO" fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "ambiguous merge-request lookup"
+  assert_contains "$out" "multiple merge requests match" "ambiguous merge-request refusal"
+  pass "merge-request lookup requires one exact source project and branch pair"
+}
+
+test_mr_create_reuses_only_one_exact_match() {
+  local scenario out rc
+  reset_case
+  out=$(run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/other 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "merge-request creation for another local branch"
+  assert_contains "$out" "does not match the checked-out task branch" \
+    "merge-request source branch refusal"
+  [ ! -s "$LOG" ] || fail "mismatched local source branch reached credentials"
+
+  reset_case
+  out=$(run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix) \
+    || fail "exact open merge request should be reused"
+  [ "$(jq -r '.mr.already' <<< "$out")" = true ] || fail "exact merge request was not reused"
+  assert_no_grep '--method POST' "$LOG" "exact reuse created another merge request"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix) \
+    || fail "missing merge request should be created"
+  [ "$(jq -r '.mr.already' <<< "$out")" = false ] || fail "new merge request reported reuse"
+  assert_grep '--method POST --raw-field source_branch=fm/fix --raw-field target_branch=main' \
+    "$LOG" "merge-request creation was not branch-bound"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_CREATED_MR_IDENTITY=fork \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "mismatched created merge request"
+  assert_contains "$out" "created merge-request identity does not match" \
+    "mismatched created merge-request refusal"
+
+  for scenario in fork wrong_target ambiguous; do
+    reset_case
+    out=$(FM_FAKE_MR_LIST_SCENARIO="$scenario" \
+      run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "$scenario merge-request reuse"
+    assert_no_grep '--method POST' "$LOG" "$scenario candidate still created a merge request"
+  done
+  pass "merge-request creation reuses only one exact trusted candidate"
+}
+
+test_lifecycle_rejects_mismatched_merge_request_identity() {
+  local out rc
+  reset_case
+  out=$(FM_FAKE_MR_IDENTITY_SCENARIO=fork run_adapter mr-view "$REPO" 5 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "fork merge-request view"
+  assert_contains "$out" "identity does not match" "fork merge-request view refusal"
+
+  reset_case
+  out=$(FM_FAKE_MR_IDENTITY_SCENARIO=wrong_target run_adapter mr-checks "$REPO" 5 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "wrong-target merge-request checks"
+  assert_contains "$out" "identity does not match" "wrong-target checks refusal"
+
+  reset_case
+  out=$(FM_FAKE_MR_IDENTITY_SCENARIO=wrong_source run_adapter mr-merge "$REPO" 5 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "wrong-source merge-request merge"
+  assert_no_grep 'mr merge 5' "$LOG" "mismatched merge request invoked merge"
+
+  reset_case
+  : > "$MERGED_MARKER"
+  out=$(FM_FAKE_MR_IDENTITY_SCENARIO=wrong_project \
+    run_adapter mr-poll "$REPO" 'https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5') \
+    || fail "mismatched merge-request poll should stay non-fatal"
+  [ -z "$out" ] || fail "mismatched merge-request poll reported merged"
+  pass "every merge-request lifecycle action verifies trusted identity"
+}
+
 test_checks_aggregate_without_dumping_successes() {
   local out
   reset_case
@@ -341,6 +459,9 @@ test_unsupported_and_ambiguous_hosts_never_reach_credentials
 test_issue_output_is_minimal_and_bounded
 test_mr_url_must_match_origin
 test_mr_body_file_cannot_read_outside_worktree
+test_mr_find_requires_one_exact_project_and_branch_match
+test_mr_create_reuses_only_one_exact_match
+test_lifecycle_rejects_mismatched_merge_request_identity
 test_checks_aggregate_without_dumping_successes
 test_failing_pipeline_blocks_merge
 test_stale_passing_pipeline_blocks_merge

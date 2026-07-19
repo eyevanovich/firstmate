@@ -22,6 +22,7 @@ mkdir -p "$STATE" "$HOME_DIR/config"
 printf '%s\n' manual > "$HOME_DIR/config/backlog-backend"
 fm_git_init_commit "$REPO"
 git -C "$REPO" remote add origin git@gitlab.com:kisscut-museum/kisscut-platform.git
+git -C "$REPO" checkout -q -b fm/gitlab-x1
 fm_write_meta "$STATE/$ID.meta" \
   "window=fm-$ID" \
   "worktree=$REPO" \
@@ -48,10 +49,13 @@ if [ "${1:-}" = api ]; then
   case "$endpoint" in
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5)
       if [ -e "$FM_FAKE_MERGED" ]; then state=merged; else state=opened; fi
-      printf '{"iid":5,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"fm/gitlab-x1","target_branch":"main","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"%s","merge_commit_sha":null,"head_pipeline":{"id":9,"status":"success","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$FM_FAKE_HEAD" "$FM_FAKE_HEAD"
+      printf '{"iid":5,"project_id":314,"source_project_id":314,"target_project_id":314,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"fm/gitlab-x1","target_branch":"main","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"%s","merge_commit_sha":null,"head_pipeline":{"id":9,"status":"success","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$FM_FAKE_HEAD" "$FM_FAKE_HEAD"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/pipelines/9/jobs\?*)
       printf '%s\n' '[{"id":4,"name":"test","stage":"test","status":"success","allow_failure":false,"web_url":"https://gitlab.com/j/4"}]'
+      ;;
+    projects/kisscut-museum%2Fkisscut-platform)
+      printf '%s\n' '{"id":314,"default_branch":"main"}'
       ;;
     *)
       printf 'unexpected endpoint: %s\n' "$endpoint" >&2
