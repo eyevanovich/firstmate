@@ -164,12 +164,13 @@ test_guarded_merge_uses_narrow_adapter() {
 test_open_gitlab_review_refuses_tree_only_cleanup() {
   local out rc
   rm -f "$MERGED"
+  "$REAL_GIT" -C "$REPO" update-ref refs/remotes/origin/fm/gitlab-x1 "$HEAD_SHA"
   out=$(run_with_env "$ROOT/bin/fm-teardown.sh" "$ID" 2>&1)
   rc=$?
   expect_code 1 "$rc" "open GitLab review cleanup"
   assert_contains "$out" "REFUSED" "open GitLab review cleanup refusal"
   assert_present "$STATE/$ID.meta" "open GitLab review cleanup removed task metadata"
-  pass "recorded GitLab reviews require canonical merge proof for cleanup"
+  pass "pushed GitLab tasks require canonical merge proof for cleanup"
 }
 
 test_explicit_gitlab_merge_method_is_preserved() {

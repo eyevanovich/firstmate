@@ -122,12 +122,15 @@ if [ "$BACKEND" = orca ]; then
 fi
 HOME_PATH=$(grep '^home=' "$META" | cut -d= -f2- || true)
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
+PR_FORGE=
 PR_TARGET=
+GITLAB_MR_PROVEN=0
 if [ -n "$PR_URL" ]; then
   fm_pr_metadata_identity_parse "$META" || {
     echo "error: recorded PR metadata is invalid" >&2
     exit 1
   }
+  PR_FORGE=$FM_PR_FORGE
   PR_TARGET=$FM_PR_META_TARGET
 fi
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
@@ -437,9 +440,9 @@ content_in_default() {
 # only for genuinely unlanded work.
 work_is_landed() {
   local branch=$1
-  if [ -n "$PR_URL" ] && fm_pr_url_parse "$PR_URL" && [ "$FM_PR_FORGE" = gitlab ]; then
-    pr_is_merged "$branch"
-    return $?
+  if [ "$PR_FORGE" = gitlab ]; then
+    [ "$GITLAB_MR_PROVEN" -eq 1 ]
+    return
   fi
   pr_is_merged "$branch" && return 0
   content_in_default
@@ -707,6 +710,19 @@ validate_worktree_teardown_safety() {
     return 1
   fi
   dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-grok-turnend$)' | head -1 || true)
+
+  if [ "$PR_FORGE" = gitlab ] && [ -z "$dirty" ]; then
+    branch=${TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY:-}
+    if [ -z "$branch" ]; then
+      branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+      TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
+    fi
+    if ! pr_is_merged "$branch"; then
+      echo "REFUSED: recorded GitLab merge request is not canonically proven merged." >&2
+      return 1
+    fi
+    GITLAB_MR_PROVEN=1
+  fi
 
   if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then
