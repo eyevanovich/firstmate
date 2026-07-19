@@ -20,12 +20,26 @@ cat > "$HOST_CONFIG" <<EOF
 	gpgSign = true
 EOF
 export GIT_CONFIG_GLOBAL="$HOST_CONFIG"
+export GIT_CONFIG_COUNT=3
+export GIT_CONFIG_KEY_0=commit.gpgsign
+export GIT_CONFIG_VALUE_0=true
+export GIT_CONFIG_KEY_1=gpg.format
+export GIT_CONFIG_VALUE_1=ssh
+export GIT_CONFIG_KEY_2=user.signingkey
+export GIT_CONFIG_VALUE_2="$TMP_ROOT/unavailable-command-signing-key.pub"
+export GIT_CONFIG_KEY_8=commit.gpgsign
+export GIT_CONFIG_VALUE_8=true
+export GIT_CONFIG_PARAMETERS="'commit.gpgsign=true'"
 
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$REPO_ROOT/tests/lib.sh"
 
 [ "$GIT_CONFIG_GLOBAL" = "$ROOT/tests/fixture.gitconfig" ] \
   || fail "tests/lib.sh did not replace the hostile host Git config"
+[ "${GIT_CONFIG_COUNT+x}${GIT_CONFIG_PARAMETERS+x}" = "" ] \
+  || fail "tests/lib.sh retained command-scope Git configuration"
+[ "${GIT_CONFIG_KEY_0+x}${GIT_CONFIG_VALUE_0+x}${GIT_CONFIG_KEY_8+x}${GIT_CONFIG_VALUE_8+x}" = "" ] \
+  || fail "tests/lib.sh retained indexed command-scope Git configuration"
 
 FIXTURE="$TMP_ROOT/fixture"
 fm_git_init_commit "$FIXTURE" \
