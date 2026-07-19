@@ -9,7 +9,6 @@ set -u
 fm_git_identity fmtest fmtest@example.invalid
 
 TMP=$(fm_test_tmproot fm-gitlab-review-tests)
-export GIT_CONFIG_GLOBAL=/dev/null
 HOME_DIR="$TMP/home"
 STATE="$HOME_DIR/state"
 REPO="$TMP/repo"
