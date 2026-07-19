@@ -45,6 +45,7 @@ for credential in GITLAB_TOKEN GITLAB_ACCESS_TOKEN OAUTH_TOKEN GLAB_ENABLE_CI_AU
 done
 printf 'token=%s args=%s\n' "${GITLAB_TOKEN-unset}" "$*" >> "$FM_FAKE_GLAB_LOG"
 if [ "${1:-} ${2:-}" = "auth status" ]; then
+  [ "${FM_FAKE_SCENARIO:-exact}" != auth_failure ] || exit 1
   [ "${3:-} ${4:-}" = "--hostname gitlab.com" ]
   exit $?
 fi
@@ -53,7 +54,14 @@ if [ "${1:-}" = api ]; then
   case "$endpoint" in
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5)
       if [ -e "$FM_FAKE_MERGED" ]; then state=merged; else state=opened; fi
-      printf '{"iid":5,"project_id":314,"source_project_id":314,"target_project_id":314,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"fm/gitlab-x1","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"%s","merge_commit_sha":null,"head_pipeline":{"id":9,"status":"success","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$FM_FAKE_TARGET" "$FM_FAKE_HEAD" "$FM_FAKE_HEAD"
+      source_branch=fm/gitlab-x1
+      target_branch=$FM_FAKE_TARGET
+      case "${FM_FAKE_SCENARIO:-exact}" in
+        wrong_source) source_branch=fm/other ;;
+        wrong_target) target_branch=main ;;
+        ambiguous) printf '%s\n' '[{"iid":5},{"iid":5}]'; exit 0 ;;
+      esac
+      printf '{"iid":5,"project_id":314,"source_project_id":314,"target_project_id":314,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"%s","merge_commit_sha":null,"head_pipeline":{"id":9,"status":"success","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$source_branch" "$target_branch" "$FM_FAKE_HEAD" "$FM_FAKE_HEAD"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/pipelines/9/jobs\?*)
       printf '%s\n' '[{"id":4,"name":"test","stage":"test","status":"success","allow_failure":false,"web_url":"https://gitlab.com/j/4"}]'
@@ -108,7 +116,8 @@ run_with_env() {
     FM_CONFIG_OVERRIDE="$HOME_DIR/config" FM_FAKE_GLAB_LOG="$LOG" \
     FM_FAKE_MERGED="$MERGED" FM_FAKE_HEAD="${FM_TEST_HEAD:-$HEAD_SHA}" \
     FM_FAKE_TARGET="$TARGET_BRANCH" FM_FAKE_REPO="$REPO" FM_REAL_GIT="$REAL_GIT" \
-    FM_FAKE_DEFAULT_HEAD="$DEFAULT_HEAD" GITLAB_TOKEN=TEST_AMBIENT_TOKEN \
+    FM_FAKE_DEFAULT_HEAD="$DEFAULT_HEAD" FM_FAKE_SCENARIO="${FM_TEST_SCENARIO:-exact}" \
+    GITLAB_TOKEN=TEST_AMBIENT_TOKEN \
     GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN OAUTH_TOKEN=TEST_OAUTH_TOKEN \
     GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN PATH="$FAKEBIN:$PATH" "$@"
 }
@@ -173,6 +182,46 @@ test_open_gitlab_review_refuses_tree_only_cleanup() {
   pass "pushed GitLab tasks require canonical merge proof for cleanup"
 }
 
+test_gitlab_cleanup_proof_has_no_structural_bypass() {
+  local scenario out rc saved_kind
+  rm -f "$MERGED"
+  "$REAL_GIT" -C "$REPO" update-ref -d refs/remotes/origin/fm/gitlab-x1
+  out=$(run_with_env "$ROOT/bin/fm-teardown.sh" "$ID" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "unpushed open GitLab review cleanup"
+  assert_contains "$out" "canonically proven merged" "unpushed GitLab refusal"
+
+  for scenario in auth_failure ambiguous wrong_source wrong_target; do
+    out=$(FM_TEST_SCENARIO="$scenario" run_with_env "$ROOT/bin/fm-teardown.sh" "$ID" 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "$scenario GitLab cleanup"
+    assert_contains "$out" "canonically proven merged" "$scenario GitLab refusal"
+  done
+
+  mv "$REPO" "$REPO.missing"
+  out=$(run_with_env "$ROOT/bin/fm-teardown.sh" "$ID" 2>&1)
+  rc=$?
+  mv "$REPO.missing" "$REPO"
+  expect_code 1 "$rc" "missing GitLab worktree cleanup"
+  assert_contains "$out" "no inspectable local worktree" "missing worktree refusal"
+
+  for saved_kind in scout secondmate; do
+    awk -v kind="$saved_kind" 'BEGIN { FS=OFS="=" } $1 == "kind" { $2=kind } { print }' \
+      "$STATE/$ID.meta" > "$STATE/$ID.meta.tmp"
+    mv "$STATE/$ID.meta.tmp" "$STATE/$ID.meta"
+    chmod 600 "$STATE/$ID.meta"
+    out=$(run_with_env "$ROOT/bin/fm-teardown.sh" "$ID" 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "$saved_kind GitLab cleanup"
+    assert_contains "$out" "canonically proven merged" "$saved_kind GitLab refusal"
+  done
+  awk 'BEGIN { FS=OFS="=" } $1 == "kind" { $2="ship" } { print }' \
+    "$STATE/$ID.meta" > "$STATE/$ID.meta.tmp"
+  mv "$STATE/$ID.meta.tmp" "$STATE/$ID.meta"
+  chmod 600 "$STATE/$ID.meta"
+  pass "GitLab cleanup proof covers task state and identity failures"
+}
+
 test_explicit_gitlab_merge_method_is_preserved() {
   local out
   : > "$LOG"
@@ -201,6 +250,7 @@ test_merged_gitlab_work_is_safe_to_clean() {
 
 test_check_records_head_and_registers_custom_poll
 test_open_gitlab_review_refuses_tree_only_cleanup
+test_gitlab_cleanup_proof_has_no_structural_bypass
 test_guarded_merge_uses_narrow_adapter
 test_explicit_gitlab_merge_method_is_preserved
 test_merged_gitlab_work_is_safe_to_clean

@@ -448,6 +448,25 @@ work_is_landed() {
   content_in_default
 }
 
+authorize_recorded_gitlab_cleanup() {
+  local branch
+  [ "$FORCE" != "--force" ] || return 0
+  [ "$PR_FORGE" = gitlab ] || return 0
+  inspectable_git_worktree "$WT" || {
+    echo "REFUSED: recorded GitLab merge request has no inspectable local worktree." >&2
+    return 1
+  }
+  branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
+    echo "REFUSED: recorded GitLab merge request has no inspectable task branch." >&2
+    return 1
+  }
+  if ! pr_is_merged "$branch"; then
+    echo "REFUSED: recorded GitLab merge request is not canonically proven merged." >&2
+    return 1
+  fi
+  GITLAB_MR_PROVEN=1
+}
+
 backlog_refresh_reminder() {
   local pr done_cmd report_path
   [ "$KIND" = secondmate ] && return 0
@@ -710,19 +729,6 @@ validate_worktree_teardown_safety() {
     return 1
   fi
   dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-grok-turnend$)' | head -1 || true)
-
-  if [ "$PR_FORGE" = gitlab ] && [ -z "$dirty" ]; then
-    branch=${TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY:-}
-    if [ -z "$branch" ]; then
-      branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-      TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
-    fi
-    if ! pr_is_merged "$branch"; then
-      echo "REFUSED: recorded GitLab merge request is not canonically proven merged." >&2
-      return 1
-    fi
-    GITLAB_MR_PROVEN=1
-  fi
 
   if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then
@@ -1087,6 +1093,7 @@ remove_secondmate_registry_entry() {
 }
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
+authorize_recorded_gitlab_cleanup || exit 1
 
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
