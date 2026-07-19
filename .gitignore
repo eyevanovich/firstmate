@@ -16,3 +16,10 @@ config/backend
 config/x-mode.env
 config/cmux-socket-password
 config/wedge-alarm
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+/.agents/skills/beads
