@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Merge a task's PR after recording pr= and any available pr_head= through
-# bin/fm-pr-check.sh, so teardown can verify landed work after squash merges.
-# The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
-# owner/repository and PR number are passed to gh-axi as separate arguments.
+# Merge a task's pull or merge request after recording pr= and any available
+# pr_head= through bin/fm-pr-check.sh, so teardown can verify landed work after
+# squash merges. GitHub delegates to gh-axi. GitLab delegates to the narrow
+# forge adapter, which verifies pipeline readiness and pins the reviewed head.
 #
-# Merge method defaults to --squash when the caller passes none of --squash,
+# Merge method defaults to squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
+# GitLab accepts only merge-method and source-branch deletion flags.
+# Usage: fm-pr-merge.sh <task-id> <pr-or-mr-url> [-- <merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +30,7 @@ if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
   exit 2
 fi
 URL=$FM_PR_URL
+FORGE=$FM_PR_FORGE
 PR_OWNER=$FM_PR_OWNER
 PR_REPO=$FM_PR_REPO
 PR_NUMBER=$FM_PR_NUMBER
@@ -65,6 +67,7 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
   echo "error: task metadata is unavailable" >&2
   exit 1
 fi
+WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
 grep -qxF "pr=$URL" "$META" || {
@@ -77,4 +80,32 @@ if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
 fi
 
-gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+if [ "$FORGE" = github ]; then
+  gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+  exit $?
+fi
+
+[ -n "$WT" ] && [ -d "$WT" ] \
+  || { echo "error: task worktree is unavailable" >&2; exit 1; }
+method=
+delete_branch=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --squash) method=squash; shift ;;
+    --merge) method=merge; shift ;;
+    --rebase) method=rebase; shift ;;
+    --method)
+      [ "$#" -ge 2 ] || { echo "error: --method requires a value" >&2; exit 2; }
+      method=$2
+      shift 2
+      ;;
+    --method=*) method=${1#--method=}; shift ;;
+    --delete-branch|--remove-source-branch) delete_branch=1; shift ;;
+    *) echo "error: unsupported GitLab merge argument: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$method" ] || method=squash
+case "$method" in merge|squash|rebase) ;; *) echo "error: invalid merge method" >&2; exit 2 ;; esac
+gitlab_args=(--method "$method")
+[ "$delete_branch" -eq 0 ] || gitlab_args+=(--delete-branch)
+"$SCRIPT_DIR/fm-forge.sh" mr-merge "$WT" "$URL" "${gitlab_args[@]}"

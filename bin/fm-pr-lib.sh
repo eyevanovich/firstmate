@@ -2,8 +2,16 @@
 # Shared validation and atomic artifact helpers for GitHub PR merge polling.
 # Callers must validate task IDs and raw PR URLs before constructing task paths
 # or performing any side effect.
+# shellcheck disable=SC2034 # Parsed forge globals are consumed by sourcing scripts.
+
+FM_PR_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-forge-lib.sh disable=SC1091
+. "$FM_PR_LIB_DIR/fm-forge-lib.sh"
 
 FM_PR_URL=
+FM_PR_FORGE=
+FM_PR_HOST=
+FM_PR_PROJECT=
 FM_PR_OWNER=
 FM_PR_REPO=
 FM_PR_NUMBER=
@@ -65,17 +73,33 @@ fm_pr_url_parse() {
   local raw=${1-} pattern
   local LC_ALL=C
   FM_PR_URL=
+  FM_PR_FORGE=
+  FM_PR_HOST=
+  FM_PR_PROJECT=
   FM_PR_OWNER=
   FM_PR_REPO=
   FM_PR_NUMBER=
   pattern='^https://github\.com/([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9])/([A-Za-z0-9._-]{1,100})/pull/([1-9][0-9]*)$'
-  [[ "$raw" =~ $pattern ]] || return 1
-  [[ "${BASH_REMATCH[1]}" != *--* ]] || return 1
-  [ "${BASH_REMATCH[2]}" != . ] && [ "${BASH_REMATCH[2]}" != .. ] || return 1
-  FM_PR_URL=$raw
-  FM_PR_OWNER=${BASH_REMATCH[1]}
-  FM_PR_REPO=${BASH_REMATCH[2]}
-  FM_PR_NUMBER=${BASH_REMATCH[3]}
+  if [[ "$raw" =~ $pattern ]]; then
+    [[ "${BASH_REMATCH[1]}" != *--* ]] || return 1
+    [ "${BASH_REMATCH[2]}" != . ] && [ "${BASH_REMATCH[2]}" != .. ] || return 1
+    FM_PR_URL=$raw
+    FM_PR_FORGE=github
+    FM_PR_HOST=github.com
+    FM_PR_PROJECT="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    FM_PR_OWNER=${BASH_REMATCH[1]}
+    FM_PR_REPO=${BASH_REMATCH[2]}
+    FM_PR_NUMBER=${BASH_REMATCH[3]}
+    return 0
+  fi
+  fm_forge_gitlab_mr_url_parse_parts "$raw" || return 1
+  FM_PR_URL=$FM_FORGE_MR_URL
+  FM_PR_FORGE=gitlab
+  FM_PR_HOST=$FM_FORGE_URL_HOST
+  FM_PR_PROJECT=$FM_FORGE_URL_PROJECT
+  FM_PR_OWNER=${FM_PR_PROJECT%/*}
+  FM_PR_REPO=${FM_PR_PROJECT##*/}
+  FM_PR_NUMBER=$FM_FORGE_MR_IID
 }
 
 fm_pr_head_valid() {
@@ -214,6 +238,7 @@ fm_pr_poll_data_parse() {
   fi
   exec 8<&-
   fm_pr_url_parse "$url" || return 1
+  [ "$FM_PR_FORGE" = github ] || return 1
   [ "$owner" = "$FM_PR_OWNER" ] || return 1
   [ "$repo" = "$FM_PR_REPO" ] || return 1
   [ "$number" = "$FM_PR_NUMBER" ] || return 1
@@ -254,6 +279,7 @@ fm_pr_poll_registration_parse() {
   [ "$version" = fm-pr-poll-registration-v1 ] || return 1
   fm_pr_task_id_valid "$id" || return 1
   fm_pr_url_parse "$url" || return 1
+  [ "$FM_PR_FORGE" = github ] || return 1
   [ "$owner" = "$FM_PR_OWNER" ] || return 1
   [ "$repo" = "$FM_PR_REPO" ] || return 1
   [ "$number" = "$FM_PR_NUMBER" ] || return 1
@@ -304,6 +330,7 @@ fm_pr_poll_prepare() {
   local state=$1 id=$2 url=$3 owner=$4 repo=$5 number=$6 template=$7
   fm_pr_task_id_valid "$id" || return 1
   fm_pr_url_parse "$url" || return 1
+  [ "$FM_PR_FORGE" = github ] || return 1
   [ "$owner" = "$FM_PR_OWNER" ] || return 1
   [ "$repo" = "$FM_PR_REPO" ] || return 1
   [ "$number" = "$FM_PR_NUMBER" ] || return 1

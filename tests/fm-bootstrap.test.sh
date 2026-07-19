@@ -786,6 +786,50 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+test_forge_tools_follow_registered_project_remotes() {
+  local case_dir home fakebin out
+
+  case_dir="$TMP_ROOT/gitlab-forge-ready"
+  home="$case_dir/home"
+  mkdir -p "$home/config" "$home/projects/gitlab-project"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  git init -q "$home/projects/gitlab-project"
+  git -C "$home/projects/gitlab-project" remote add origin git@gitlab.com:group/project.git
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/gh" "$fakebin/gh-axi"
+  add_real_jq "$fakebin"
+  cat > "$fakebin/glab" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-}" = "auth status" ] || exit 1
+[ "${3:-} ${4:-}" = "--hostname gitlab.com" ] || exit 1
+[ "${FM_FAKE_GITLAB_AUTH:-1}" = 1 ]
+SH
+  chmod +x "$fakebin/glab"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "GitLab-only home should not require GitHub tooling, got: $out"
+
+  rm -f "$fakebin/glab"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "MISSING: glab (install: brew install glab  # or the platform's package manager)" \
+    "GitLab project should require glab"
+  assert_not_contains "$out" "MISSING: gh" "GitLab project should not require gh"
+  assert_not_contains "$out" "MISSING: gh-axi" "GitLab project should not require gh-axi"
+
+  cat > "$fakebin/glab" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$fakebin/glab"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "NEEDS_GITLAB_AUTH: gitlab.com" \
+    "GitLab auth failure should name the trusted host"
+  assert_not_contains "$out" "NEEDS_GH_AUTH" "GitLab auth failure should not request GitHub login"
+  pass "bootstrap selects forge tools and authentication from project remotes"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_git_is_required_with_supported_install_instruction
@@ -807,3 +851,4 @@ test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_info_is_no_load_and_actionable_lines_trigger
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation
+test_forge_tools_follow_registered_project_remotes

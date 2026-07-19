@@ -40,6 +40,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `backends/cmux.sh`       | Experimental cmux session-provider adapter                                           |
 | `fm-config-push.sh`      | Push declared inherited local material to live secondmate homes mid-session          |
 | `fm-project-mode.sh`     | Resolve a project's delivery mode and `+yolo` flag from `data/projects.md`           |
+| `fm-forge-lib.sh`       | Resolve trusted forge identity from a clone origin and own authenticated GitLab transport |
+| `fm-forge.sh`           | Provide the narrow token-efficient GitLab issue, merge-request, and pipeline interface |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
 | `fm-review-diff.sh`      | Review a crewmate branch or recorded PR head against the authoritative base          |
 | `fm-marker-lib.sh`       | Shared from-firstmate request marker, detector, and idempotent transformation         |
@@ -67,11 +69,11 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-peek.sh`             | Print a bounded tail of a crewmate endpoint                                          |
 | `fm-check-register.sh`   | Bind an intentional custom watcher check to its current bytes                       |
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
-| `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll and provenance publication |
-| `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR-poll sidecars              |
-| `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
-| `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
-| `fm-pr-merge.sh`         | Record PR metadata, then merge a task's canonical full GitHub URL                    |
+| `fm-pr-lib.sh`           | Own canonical GitHub PR and GitLab MR validation plus private GitHub poll publication |
+| `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated GitHub PR-poll sidecars       |
+| `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical GitHub polls |
+| `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then arm the provider's authenticated merge poll |
+| `fm-pr-merge.sh`         | Record review metadata, then merge a canonical GitHub PR or GitLab MR through its guarded adapter |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task                               |
 | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
