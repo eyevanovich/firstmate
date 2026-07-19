@@ -78,6 +78,10 @@
 #          clones, or repair instructions.
 #          Unset/0 (the default) runs every sweep exactly as before - this flag
 #          is purely additive.
+#        fm-bootstrap.sh check-forge github
+#          Non-mutating readiness check for a GitHub add/create operation.
+#          Prints the same deduplicated gh, gh-axi, and auth diagnostics as
+#          session bootstrap and exits non-zero until all three are ready.
 #        fm-bootstrap.sh install <tool>...
 #          Install the named tools (only ones the captain approved).
 set -u
@@ -463,6 +467,23 @@ report_missing_tool_once() {
   missing_tool_diagnostic "$tool"
 }
 
+github_forge_diagnostics() {
+  local failed=0
+  if ! command -v gh >/dev/null 2>&1; then
+    report_missing_tool_once gh
+    failed=1
+  fi
+  if ! command -v gh-axi >/dev/null 2>&1; then
+    report_missing_tool_once gh-axi
+    failed=1
+  fi
+  if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
+    echo "NEEDS_GH_AUTH"
+    failed=1
+  fi
+  [ "$failed" -eq 0 ]
+}
+
 forge_project_diagnostics() {
   local proj remote host github_required=0 gitlab_hosts=""
   [ -d "$PROJECTS" ] || return 0
@@ -486,11 +507,7 @@ forge_project_diagnostics() {
   done
 
   if [ "$github_required" -eq 1 ]; then
-    command -v gh >/dev/null 2>&1 || report_missing_tool_once gh
-    command -v gh-axi >/dev/null 2>&1 || report_missing_tool_once gh-axi
-    if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
-      echo "NEEDS_GH_AUTH"
-    fi
+    github_forge_diagnostics || true
   fi
 
   if [ -n "$gitlab_hosts" ]; then
@@ -784,6 +801,14 @@ crew_dispatch_validate() {
   ' "$file"
   fi
 }
+
+if [ "${1:-}" = "check-forge" ]; then
+  [ "$#" -eq 2 ] || { echo "usage: fm-bootstrap.sh check-forge github" >&2; exit 2; }
+  case "$2" in
+    github) github_forge_diagnostics; exit $? ;;
+    *) echo "error: unsupported forge readiness check: $2" >&2; exit 2 ;;
+  esac
+fi
 
 if [ "${1:-}" = "install" ]; then
   shift

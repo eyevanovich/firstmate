@@ -102,6 +102,16 @@ An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisel
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
 See [`wedge-alarm.md`](wedge-alarm.md) for the channel reference and macOS verification evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
+## Signed no-mistakes fixes (config/signing-agent)
+
+When effective Git config enables SSH commit signing, local gitignored `config/signing-agent` contains exactly one absolute path to the selected signing agent's Unix socket.
+The file contains no key or credential and is inherited by secondmate homes on the same machine.
+Immediately before a no-mistakes run, the generated ship instructions run `bin/fm-signing-agent.sh preflight <repo>`.
+The preflight verifies that the configured socket is live and owned by the current user, that the agent holds `user.signingkey`, and that an isolated scratch repository can create a signed commit with ambient `SSH_AUTH_SOCK` removed.
+Only after that proof succeeds does it configure the repository's local no-mistakes bare gate to use the same tracked script as `gpg.ssh.program`; wrapper mode reads the explicit socket and execs `ssh-keygen`, so fix commits do not depend on the daemon's stale or missing ambient agent path.
+If signing is enabled but the socket, key, or gate is unavailable, the preflight stops before review work begins.
+If signing is explicitly disabled while a signing-agent configuration or global signing requirement exists, it refuses rather than silently producing unsigned commits; an unsigned fallback remains a security-sensitive captain decision outside this helper.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` keeps test evidence outside the repo and defines `commands.test` so no-mistakes runs firstmate's bash behavior suite directly.
@@ -225,6 +235,15 @@ If no dispatch rule fits, firstmate uses the dispatch profile `default` when pre
 Because the spawn backstop is gated by file presence, any fallback path after a missing match, validation error, or missing `jq` still passes a resolved harness explicitly until the file is fixed or removed.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+## Forge providers (config/forge-hosts)
+
+Firstmate identifies `github.com` as GitHub and `gitlab.com` as GitLab without local configuration.
+Every other network origin is unsupported unless the captain explicitly confirms that an exact self-hosted origin host is GitLab and Firstmate records it in local, gitignored `config/forge-hosts` as one line `gitlab <host>`.
+The host uses the same strict hostname and optional port syntax as a clone origin, matching case-insensitively and exactly after normalization; blank lines and lines beginning with `#` are ignored, and any other line shape invalidates the registration file.
+The file is inherited by secondmate homes so provider identity stays explicit throughout the fleet.
+`bin/fm-forge-lib.sh` owns parsing and refuses ambiguous providers - including unregistered GitHub Enterprise-shaped and unknown hosts - before any `gh` or `glab` authentication or API call.
+Never populate this file by probing a host with credentials or trusting a CLI response; the captain's explicit host confirmation is the trust event.
+
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.
@@ -236,6 +255,7 @@ In that list, no-mistakes runs the validation pipeline, chrome-devtools-axi and 
 A registered GitHub clone adds `gh`, `gh-axi`, and successful `gh auth status`.
 A registered GitLab clone adds `glab`, `jq`, and successful `glab auth status --hostname <trusted-origin-host>`.
 A home with no clone on a forge is not asked to install or authenticate that forge's tools.
+Before an empty home or a home without GitHub projects starts a GitHub add/create operation, `bin/fm-bootstrap.sh check-forge github` applies the same `gh`, `gh-axi`, and authentication diagnostics and exits non-zero until all three are ready.
 The narrow `bin/fm-forge.sh` GitLab adapter derives host and project only from the clone's origin, removes ambient GitLab token variables, calls `glab api --hostname` with that trusted host and the credential stored by `glab auth login`, and emits compact JSON for issues, merge requests, and pipelines.
 It deliberately exposes no raw API, project deletion, secret mutation, or repository-content write surface.
 GitLab merge polling uses a hash-registered custom check, while GitHub retains the canonical byte-static PR poll.
@@ -265,7 +285,7 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a live secondmate endpoint is skipped or respawn fails; already-live and successfully respawned endpoints are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync and reread nudges are not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero only for real propagation errors.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `forge-hosts`, `signing-agent`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero only for real propagation errors.
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
 

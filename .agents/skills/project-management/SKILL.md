@@ -41,6 +41,9 @@ Destructive, irreversible, and security-sensitive decisions still require captai
 ## Add or clone an existing project
 
 Confirm the source URL, local project name, delivery mode, and autonomy posture.
+Before any GitHub add path starts, run `bin/fm-bootstrap.sh check-forge github`; if it prints diagnostics, load `bootstrap-diagnostics`, resolve them, and rerun the check until it is silent.
+Public `github.com` and `gitlab.com` origins are identified directly.
+A self-hosted GitLab origin is accepted only after the captain explicitly confirms that exact host as GitLab and Firstmate records `gitlab <host>` in local `config/forge-hosts`; never infer provider identity from a hostname, ambient credential, or CLI response.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
 A `no-mistakes` project must have a GitHub `origin` remote and must complete the initialization procedure below.
 A `direct-PR` project needs a GitHub or GitLab `origin` remote but skips no-mistakes initialization.
@@ -50,6 +53,7 @@ A `local-only` project may have no remote and skips no-mistakes initialization.
 ## Create a project
 
 Creating a remote repository is outward-facing.
+Before a GitHub create path starts, run `bin/fm-bootstrap.sh check-forge github`; if it prints diagnostics, load `bootstrap-diagnostics`, resolve them, and rerun the check until it is silent.
 Before making that remote change, propose the forge, repository name, owner or organization, visibility, and delivery mode, defaulting visibility to private, GitHub delivery to `no-mistakes`, and GitLab delivery to `direct-PR`, then obtain the captain's explicit consent for those values.
 Use `gh-axi` for an approved GitHub operation and consult its current help rather than relying on remembered flags.
 The narrow GitLab adapter deliberately does not expose project creation, so the captain must create a new GitLab project through a trusted GitLab surface before Firstmate adds it.

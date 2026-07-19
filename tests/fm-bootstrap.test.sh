@@ -42,7 +42,8 @@ make_fake_toolchain() {
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
-  exit 0
+  [ "${FM_FAKE_GH_AUTH:-1}" = 1 ]
+  exit $?
 fi
 exit 0
 SH
@@ -786,6 +787,56 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+test_empty_home_github_preflight() {
+  local case_dir home fakebin out rc
+  case_dir="$TMP_ROOT/empty-home-github-preflight"
+  home="$case_dir/home"
+  mkdir -p "$home/config"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+
+  rm -f "$fakebin/gh" "$fakebin/gh-axi"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    "$ROOT/bin/fm-bootstrap.sh" check-forge github 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "empty-home GitHub preflight with missing tools"
+  [ "$(printf '%s\n' "$out" | grep -Fc "MISSING: gh (install: brew install gh  # or the platform's package manager)")" -eq 1 ] \
+    || fail "empty-home preflight should report missing gh exactly once: $out"
+  [ "$(printf '%s\n' "$out" | grep -Fc 'MISSING: gh-axi (install: npm install -g gh-axi && gh-axi setup hooks)')" -eq 1 ] \
+    || fail "empty-home preflight should report missing gh-axi exactly once: $out"
+  assert_not_contains "$out" "NEEDS_GH_AUTH" "missing gh should not also report authentication"
+
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/gh-axi"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_FAKE_GH_AUTH=0 "$ROOT/bin/fm-bootstrap.sh" check-forge github 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "empty-home GitHub preflight with missing gh-axi and auth"
+  [ "$(printf '%s\n' "$out" | grep -Fc 'MISSING: gh-axi (install: npm install -g gh-axi && gh-axi setup hooks)')" -eq 1 ] \
+    || fail "preflight should deduplicate missing gh-axi: $out"
+  [ "$(printf '%s\n' "$out" | grep -Fc 'NEEDS_GH_AUTH')" -eq 1 ] \
+    || fail "preflight should report GitHub auth exactly once: $out"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_FAKE_GH_AUTH=1 "$ROOT/bin/fm-bootstrap.sh" check-forge github 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "empty-home GitHub preflight with gh-axi still missing"
+  assert_not_contains "$out" "NEEDS_GH_AUTH" "authenticated preflight should not report auth"
+
+  fm_fake_exit0 "$fakebin" gh-axi
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_FAKE_GH_AUTH=1 "$ROOT/bin/fm-bootstrap.sh" check-forge github 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "ready empty-home GitHub preflight"
+  [ -z "$out" ] || fail "ready empty-home GitHub preflight should be silent, got: $out"
+
+  rm -f "$fakebin/gh" "$fakebin/gh-axi"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+    FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "normal empty-home bootstrap should not require GitHub tooling, got: $out"
+  pass "empty homes gate GitHub add/create readiness without globally requiring GitHub"
+}
+
 test_forge_tools_follow_registered_project_remotes() {
   local case_dir home fakebin out
 
@@ -851,4 +902,5 @@ test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_info_is_no_load_and_actionable_lines_trigger
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation
+test_empty_home_github_preflight
 test_forge_tools_follow_registered_project_remotes

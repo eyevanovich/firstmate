@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Shared forge identity and authenticated GitLab transport.
 #
-# The registered clone's origin remote is the only trust root.
+# The registered clone's origin remote selects the host and project, while the
+# provider is identified independently: github.com and gitlab.com are built in,
+# and self-hosted GitLab requires an exact local registration in
+# config/forge-hosts. Unsupported or ambiguous hosts fail before authentication.
 # User-supplied issue or merge-request content never selects a host or project.
 # Call fm_forge_repo_resolve <repo> before reading FM_FORGE_* globals.
 # GitLab API calls always pass the trusted host through glab's --hostname flag.
@@ -55,8 +58,59 @@ fm_forge_project_valid() {
   done
 }
 
+fm_forge_hosts_file() {
+  local root config
+  if [ -n "${FM_FORGE_HOSTS_FILE:-}" ]; then
+    printf '%s\n' "$FM_FORGE_HOSTS_FILE"
+    return 0
+  fi
+  root=${FM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+  config=${FM_CONFIG_OVERRIDE:-$root/config}
+  printf '%s/forge-hosts\n' "$config"
+}
+
+fm_forge_registered_gitlab_host() {
+  local host=$1 file line provider configured_host extra matched=0
+  file=$(fm_forge_hosts_file) || return 1
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    provider=
+    configured_host=
+    extra=
+    read -r provider configured_host extra <<< "$line"
+    [ "$provider" = gitlab ] && [ -n "$configured_host" ] && [ -z "$extra" ] || return 1
+    fm_forge_host_valid "$configured_host" || return 1
+    configured_host=$(printf '%s' "$configured_host" | tr '[:upper:]' '[:lower:]')
+    [ "$configured_host" != github.com ] && [ "$configured_host" != gitlab.com ] || return 1
+    [ "$configured_host" != "$host" ] || matched=1
+  done < "$file"
+  [ "$matched" -eq 1 ]
+}
+
+fm_forge_provider_identify() {
+  local host=$1 host_name
+  host_name=${host%%:*}
+  case "$host_name" in
+    github.com)
+      [ "$host" = github.com ] || return 1
+      FM_FORGE_KIND=github
+      ;;
+    gitlab.com)
+      [ "$host" = gitlab.com ] || return 1
+      FM_FORGE_KIND=gitlab
+      ;;
+    *)
+      fm_forge_registered_gitlab_host "$host" || return 1
+      FM_FORGE_KIND=gitlab
+      ;;
+  esac
+}
+
 fm_forge_remote_parse() {
-  local raw=${1-} rest authority host project host_name
+  local raw=${1-} rest authority host project
   FM_FORGE_KIND=
   FM_FORGE_HOST=
   FM_FORGE_PROJECT=
@@ -86,15 +140,10 @@ fm_forge_remote_parse() {
   fm_forge_project_valid "$project" || return 1
 
   host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
-  host_name=${host%%:*}
+  fm_forge_provider_identify "$host" || return 1
   FM_FORGE_REMOTE=$raw
   FM_FORGE_HOST=$host
   FM_FORGE_PROJECT=$project
-  if [ "$host_name" = github.com ]; then
-    FM_FORGE_KIND=github
-  else
-    FM_FORGE_KIND=gitlab
-  fi
 }
 
 fm_forge_repo_resolve() {

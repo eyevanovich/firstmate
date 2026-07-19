@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Behavior and security tests for the narrow GitLab forge adapter.
-# The suite proves that origin is the only host/project authority, API output is
-# bounded and normalized before reaching an agent, failing checks block merges,
-# and a successful merge is head-SHA pinned and verified.
+# Behavior and security tests for the narrow forge adapter.
+# The suite proves that origin is the only host/project authority, providers are
+# explicit, unsupported hosts never reach credentials, API output is bounded and
+# normalized before reaching an agent, failing checks block merges, and a
+# successful merge is head-SHA pinned and verified.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -13,6 +14,7 @@ ADAPTER="$ROOT/bin/fm-forge.sh"
 REPO="$TMP/repo"
 FAKEBIN=$(fm_fakebin "$TMP")
 LOG="$TMP/glab.log"
+GH_LOG="$TMP/gh.log"
 MERGED_MARKER="$TMP/merged"
 
 fm_git_init_commit "$REPO"
@@ -104,13 +106,22 @@ exit 1
 SH
 chmod +x "$FAKEBIN/glab"
 
+cat > "$FAKEBIN/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_GH_LOG"
+exit 1
+SH
+chmod +x "$FAKEBIN/gh"
+
 run_adapter() {
-  PATH="$FAKEBIN:$PATH" FM_FAKE_GLAB_LOG="$LOG" FM_FAKE_MERGED_MARKER="$MERGED_MARKER" \
+  PATH="$FAKEBIN:$PATH" FM_FAKE_GLAB_LOG="$LOG" FM_FAKE_GH_LOG="$GH_LOG" \
+    FM_FAKE_MERGED_MARKER="$MERGED_MARKER" FM_FORGE_HOSTS_FILE="${FM_FORGE_HOSTS_FILE:-}" \
     GITLAB_TOKEN=TEST_AMBIENT_TOKEN "$ADAPTER" "$@"
 }
 
 reset_case() {
   : > "$LOG"
+  : > "$GH_LOG"
   rm -f "$MERGED_MARKER"
 }
 
@@ -133,6 +144,61 @@ test_auth_targets_trusted_host() {
   assert_grep 'auth status --hostname gitlab.com' "$LOG" "auth did not target trusted host"
   assert_grep 'token=unset' "$LOG" "auth inherited an ambient GitLab token"
   pass "GitLab authentication uses the trusted host and stored credential only"
+}
+
+test_public_github_is_identified_without_credentials() {
+  local repo out
+  reset_case
+  repo="$TMP/github-repo"
+  fm_git_init_commit "$repo"
+  git -C "$repo" remote add origin git@github.com:group/project.git
+  out=$(run_adapter repo "$repo") || fail "public GitHub origin should resolve"
+  [ "$(jq -r '.forge' <<< "$out")" = github ] || fail "public GitHub forge mismatch"
+  [ "$(jq -r '.host' <<< "$out")" = github.com ] || fail "public GitHub host mismatch"
+  [ ! -s "$LOG" ] || fail "GitHub identity contacted glab"
+  [ ! -s "$GH_LOG" ] || fail "GitHub identity contacted gh"
+  pass "public GitHub identity resolves without a credentialed call"
+}
+
+test_registered_self_hosted_gitlab_is_explicit() {
+  local repo hosts out
+  reset_case
+  repo="$TMP/self-hosted-gitlab"
+  hosts="$TMP/forge-hosts"
+  fm_git_init_commit "$repo"
+  git -C "$repo" remote add origin git@gitlab.example.com:group/project.git
+
+  out=$(run_adapter repo "$repo" 2>&1)
+  expect_code 1 "$?" "unregistered self-hosted GitLab"
+  assert_contains "$out" "cannot be resolved safely" "unregistered self-hosted GitLab refusal"
+  [ ! -s "$LOG" ] || fail "unregistered self-hosted GitLab contacted glab"
+
+  printf '%s\n' 'gitlab gitlab.example.com' > "$hosts"
+  out=$(FM_FORGE_HOSTS_FILE="$hosts" run_adapter auth "$repo") \
+    || fail "registered self-hosted GitLab auth should succeed"
+  [ "$(jq -r '.host' <<< "$out")" = gitlab.example.com ] || fail "registered host mismatch"
+  assert_grep 'auth status --hostname gitlab.example.com' "$LOG" \
+    "registered self-hosted GitLab did not target its configured host"
+  pass "self-hosted GitLab requires an exact trusted registration"
+}
+
+test_unsupported_and_ambiguous_hosts_never_reach_credentials() {
+  local host repo out rc before_glab before_gh
+  reset_case
+  for host in bitbucket.org github.example.com unknown.example; do
+    repo="$TMP/unsupported-${host//./-}"
+    fm_git_init_commit "$repo"
+    git -C "$repo" remote add origin "git@$host:group/project.git"
+    before_glab=$(wc -l < "$LOG")
+    before_gh=$(wc -l < "$GH_LOG")
+    out=$(run_adapter auth "$repo" 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "unsupported forge host $host"
+    assert_contains "$out" "cannot be resolved safely" "unsupported host refusal for $host"
+    [ "$(wc -l < "$LOG")" -eq "$before_glab" ] || fail "$host reached glab"
+    [ "$(wc -l < "$GH_LOG")" -eq "$before_gh" ] || fail "$host reached gh"
+  done
+  pass "unsupported and GitHub Enterprise-ambiguous hosts fail before credentials"
 }
 
 test_issue_output_is_minimal_and_bounded() {
@@ -261,6 +327,9 @@ test_malicious_remote_path_is_rejected() {
 
 test_repo_identity_is_remote_derived
 test_auth_targets_trusted_host
+test_public_github_is_identified_without_credentials
+test_registered_self_hosted_gitlab_is_explicit
+test_unsupported_and_ambiguous_hosts_never_reach_credentials
 test_issue_output_is_minimal_and_bounded
 test_mr_url_must_match_origin
 test_mr_body_file_cannot_read_outside_worktree
