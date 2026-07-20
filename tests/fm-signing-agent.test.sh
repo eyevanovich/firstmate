@@ -118,6 +118,7 @@ test_preflight_signs_directly_with_effective_private_key() {
   printf '[gpg "ssh"]\n\tprogram = %s\n' "$hostile_program" > "$dir/hostile.gitconfig"
 
   HOME="$user_home" GIT_CONFIG_GLOBAL="$dir/hostile.gitconfig" \
+    FM_SIGNING_SSH_KEYGEN_EXEC="$hostile_program" \
     SSH_AUTH_SOCK='/tmp/Secretive-agent-does-not-exist.sock' \
     FM_HOME="$home" "$HELPER" preflight "$repo" \
     || fail "private-key preflight should sign directly without a configured agent"
@@ -201,7 +202,7 @@ test_preflight_refuses_unusable_signing_configuration() {
 }
 
 test_preflight_rejects_unsupported_literal_key() {
-  local dir home repo gate key literal raw out rc
+  local dir home repo gate key prefixed_key literal raw out rc
   dir="$TMP/literal-key"
   home="$dir/home"
   repo="$dir/repo"
@@ -225,6 +226,12 @@ test_preflight_rejects_unsupported_literal_key() {
   expect_code 1 "$rc" "raw literal SSH signing key"
   assert_contains "$out" "literal SSH user.signingkey values are unsupported" \
     "raw literal SSH key refusal is not actionable"
+
+  prefixed_key="$dir/ssh-signing-key"
+  generate_test_key "$prefixed_key"
+  git -C "$repo" config user.signingkey ssh-signing-key
+  (cd "$dir" && FM_HOME="$home" "$HELPER" preflight "$repo") \
+    || fail "relative signing-key path with an algorithm-like prefix should succeed"
   pass "unsupported literal SSH signing-key forms are rejected deliberately"
 }
 
