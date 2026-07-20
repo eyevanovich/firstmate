@@ -59,9 +59,8 @@ ssh_keygen_exec() {
 }
 
 signing_required() {
-  local repo=$1 effective global
+  local repo=$1 effective
   effective=$(git -C "$repo" config --bool --get commit.gpgsign 2>/dev/null || true)
-  global=$(git config --global --bool --get commit.gpgsign 2>/dev/null || true)
   case "$effective" in
     true)
       return 0
