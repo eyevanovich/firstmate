@@ -106,14 +106,14 @@ See [`wedge-alarm.md`](wedge-alarm.md) for the channel reference and macOS verif
 
 Immediately before a no-mistakes run, the generated ship instructions run `bin/fm-signing-agent.sh preflight <repo>`.
 The default SSH path uses Git's effective private-key `user.signingkey` directly and requires its companion `.pub` file for safe public-identity validation.
-With no local `config/signing-agent`, the preflight removes ambient `SSH_AUTH_SOCK`, proves an isolated scratch repository can create a signed commit with that private key, and removes any stale signing-agent wrapper from the repository's local no-mistakes bare gate.
+With no local `config/signing-agent`, the preflight removes ambient `SSH_AUTH_SOCK`, pins native `ssh-keygen`, proves an isolated scratch repository can create a signed commit with that private key, and records the native program and private-key path in the repository's local no-mistakes bare gate.
 A public-key `user.signingkey` cannot sign directly and requires the explicit-agent mode below.
-Literal `key::` SSH identities are valid Git configuration but are deliberately unsupported by this preflight; use a private-key path or an explicit agent with a public-key path.
+Literal `key::` and deprecated raw SSH public-key identities are valid Git configuration but are deliberately unsupported by this preflight; use a private-key path or an explicit agent with a public-key path.
 
 Local gitignored `config/signing-agent` optionally contains exactly one absolute path to an intentionally selected signing agent's Unix socket.
 The file contains no key or credential and is inherited by secondmate homes on the same machine.
 When it exists, the preflight verifies that the socket is live and owned by the current user, resolves the configured identity from the public-key file or a private key's companion `.pub` file, and verifies by fingerprint that the agent holds that identity.
-Only after an isolated signed-commit proof succeeds does it configure the bare gate to use the tracked helper as `gpg.ssh.program`; wrapper mode reads the explicit socket and execs `ssh-keygen`, so fix commits do not depend on the daemon's ambient agent path.
+Only after an isolated signed-commit proof succeeds with the companion public-key path does it configure the bare gate to use that path and the tracked helper as `gpg.ssh.program`; wrapper mode reads the explicit socket and execs `ssh-keygen`, so fix commits cannot read the private key directly or depend on the daemon's ambient agent path.
 The helper never selects an agent or falls back to one when `config/signing-agent` is absent.
 The companion public key must be registered as a signing key with each forge that should display the resulting commits as verified.
 

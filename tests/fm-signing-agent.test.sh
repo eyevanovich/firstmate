@@ -61,7 +61,7 @@ assert_signed_commit() {
 }
 
 test_preflight_bridges_explicit_agent_into_isolated_commit() {
-  local dir home repo gate key wrapper isolated
+  local dir home repo gate key wrapper configured_key isolated
   dir="$TMP/agent-success"
   home="$dir/home"
   repo="$dir/repo"
@@ -72,12 +72,14 @@ test_preflight_bridges_explicit_agent_into_isolated_commit() {
   start_test_agent
   load_test_key "$key"
   printf '%s\n' "$AGENT_SOCKET" > "$home/config/signing-agent"
-  make_repo "$repo" "$key.pub" "$gate"
+  make_repo "$repo" "$key" "$gate"
 
   FM_HOME="$home" "$HELPER" preflight "$repo" \
     || fail "signing preflight should succeed with the explicitly configured agent"
   wrapper=$(git --git-dir="$gate" config --get gpg.ssh.program)
   [ "$wrapper" = "$HELPER" ] || fail "no-mistakes gate did not record the trusted signing wrapper"
+  configured_key=$(git --git-dir="$gate" config --get user.signingkey)
+  [ "$configured_key" = "$key.pub" ] || fail "explicit-agent gate did not record the companion public key"
   [ -z "$(git -C "$repo" status --porcelain)" ] || fail "preflight dirtied the source worktree"
   [ -z "$(find "$repo" -maxdepth 1 -name '.fm-signing-preflight.*' -print -quit)" ] \
     || fail "preflight left its scratch repository behind"
@@ -86,7 +88,7 @@ test_preflight_bridges_explicit_agent_into_isolated_commit() {
   git init -q "$isolated"
   git -C "$isolated" config user.name 'Isolated Signing Test'
   git -C "$isolated" config user.email 'isolated-signing-test@localhost'
-  git -C "$isolated" config user.signingkey "$key.pub"
+  git -C "$isolated" config user.signingkey "$configured_key"
   git -C "$isolated" config gpg.format ssh
   git -C "$isolated" config commit.gpgsign true
   git -C "$isolated" config gpg.ssh.program "$wrapper"
@@ -99,7 +101,7 @@ test_preflight_bridges_explicit_agent_into_isolated_commit() {
 }
 
 test_preflight_signs_directly_with_effective_private_key() {
-  local dir home user_home repo gate key isolated configured_key configured_program
+  local dir home user_home repo gate key hostile_program isolated configured_key configured_program
   dir="$TMP/direct-success"
   home="$dir/firstmate-home"
   user_home="$dir/user-home"
@@ -110,25 +112,34 @@ test_preflight_signs_directly_with_effective_private_key() {
   generate_test_key "$key"
   configured_key=$(printf '%b%s' '\176' '/.ssh/id_ed25519_git_signing')
   make_repo "$repo" "$configured_key" "$gate"
-  git --git-dir="$gate" config gpg.ssh.program '/tmp/Secretive-signing-wrapper'
+  hostile_program="$dir/Secretive-signing-wrapper"
+  printf '%s\n' '#!/bin/sh' 'exit 97' > "$hostile_program"
+  chmod +x "$hostile_program"
+  printf '[gpg "ssh"]\n\tprogram = %s\n' "$hostile_program" > "$dir/hostile.gitconfig"
 
-  HOME="$user_home" SSH_AUTH_SOCK='/tmp/Secretive-agent-does-not-exist.sock' \
+  HOME="$user_home" GIT_CONFIG_GLOBAL="$dir/hostile.gitconfig" \
+    SSH_AUTH_SOCK='/tmp/Secretive-agent-does-not-exist.sock' \
     FM_HOME="$home" "$HELPER" preflight "$repo" \
     || fail "private-key preflight should sign directly without a configured agent"
   configured_program=$(git --git-dir="$gate" config --get gpg.ssh.program 2>/dev/null || true)
-  [ -z "$configured_program" ] || fail "direct signing retained an agent signing wrapper"
+  [ "$configured_program" != "$hostile_program" ] || fail "direct signing retained an inherited signing wrapper"
+  [ "$configured_program" = "$(command -v ssh-keygen)" ] || fail "direct signing did not pin native ssh-keygen"
+  configured_key=$(git --git-dir="$gate" config --get user.signingkey)
+  [ "$configured_key" = "$key" ] || fail "direct-signing gate did not record the private key"
   [ ! -e "$home/config/signing-agent" ] || fail "direct signing created signing-agent config"
 
   isolated="$dir/isolated"
   git init -q "$isolated"
   git -C "$isolated" config user.name 'Direct Signing Test'
   git -C "$isolated" config user.email 'direct-signing-test@localhost'
-  git -C "$isolated" config user.signingkey "$key"
+  git -C "$isolated" config user.signingkey "$configured_key"
   git -C "$isolated" config gpg.format ssh
   git -C "$isolated" config commit.gpgsign true
+  git -C "$isolated" config gpg.ssh.program "$configured_program"
   printf '%s\n' signed > "$isolated/file"
   git -C "$isolated" add file
-  env -u SSH_AUTH_SOCK git -C "$isolated" commit -q -m signed \
+  env -u SSH_AUTH_SOCK GIT_CONFIG_GLOBAL="$dir/hostile.gitconfig" \
+    git -C "$isolated" commit -q -m signed \
     || fail "private key could not sign directly without SSH_AUTH_SOCK"
   assert_signed_commit "$isolated"
   pass "effective private-key path signs directly without Secretive or SSH_AUTH_SOCK"
@@ -190,7 +201,7 @@ test_preflight_refuses_unusable_signing_configuration() {
 }
 
 test_preflight_rejects_unsupported_literal_key() {
-  local dir home repo gate key literal out rc
+  local dir home repo gate key literal raw out rc
   dir="$TMP/literal-key"
   home="$dir/home"
   repo="$dir/repo"
@@ -206,7 +217,15 @@ test_preflight_rejects_unsupported_literal_key() {
   expect_code 1 "$rc" "literal SSH signing key"
   assert_contains "$out" "literal SSH user.signingkey values are unsupported" \
     "literal SSH key refusal is not actionable"
-  pass "unsupported literal SSH signing-key form is rejected deliberately"
+
+  raw=$(cat "$key.pub")
+  git -C "$repo" config user.signingkey "$raw"
+  out=$(FM_HOME="$home" "$HELPER" preflight "$repo" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "raw literal SSH signing key"
+  assert_contains "$out" "literal SSH user.signingkey values are unsupported" \
+    "raw literal SSH key refusal is not actionable"
+  pass "unsupported literal SSH signing-key forms are rejected deliberately"
 }
 
 test_unsigned_repo_without_signing_config_is_refused() {

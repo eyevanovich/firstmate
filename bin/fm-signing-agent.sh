@@ -91,7 +91,7 @@ signing_required() {
 signing_public_key() {
   local key=$1 public
   case "$key" in
-    key::*)
+    key::*|ssh-*|ecdsa-*|sk-*)
       fail "literal SSH user.signingkey values are unsupported; configure a private-key path or an explicit signing agent with a public-key path"
       ;;
     *.pub)
@@ -134,7 +134,7 @@ signing_key_in_agent() {
 }
 
 signed_commit_smoke() {
-  local repo=$1 format=$2 key=$3 signing_path=$4 scratch commit
+  local repo=$1 format=$2 key=$3 signing_path=$4 program scratch commit
   scratch=$(mktemp -d "$repo/.fm-signing-preflight.XXXXXX" 2>/dev/null) \
     || fail "cannot create signing preflight directory inside $repo"
   trap 'rm -rf -- "$scratch"' EXIT
@@ -144,8 +144,12 @@ signed_commit_smoke() {
   git -C "$scratch" config commit.gpgsign true
   git -C "$scratch" config gpg.format "$format"
   git -C "$scratch" config user.signingkey "$key"
-  if [ "$format" = ssh ] && [ "$signing_path" = agent ]; then
-    git -C "$scratch" config gpg.ssh.program "$SELF"
+  if [ "$format" = ssh ]; then
+    case "$signing_path" in
+      agent) program=$SELF ;;
+      direct) program=$(ssh_keygen_program) ;;
+    esac
+    git -C "$scratch" config gpg.ssh.program "$program"
   fi
   printf '%s\n' preflight > "$scratch/probe"
   git -C "$scratch" add probe
@@ -168,7 +172,7 @@ signed_commit_smoke() {
 }
 
 configure_gate_signing() {
-  local repo=$1 program=$2 gate bare rc
+  local repo=$1 program=$2 key=$3 gate bare
   gate=$(git -C "$repo" remote get-url no-mistakes 2>/dev/null) \
     || fail "no-mistakes is not initialized for $repo; run no-mistakes init first"
   case "$gate" in
@@ -178,15 +182,10 @@ configure_gate_signing() {
   [ -d "$gate" ] && [ ! -L "$gate" ] || fail "no-mistakes gate repository is unavailable"
   bare=$(git --git-dir="$gate" rev-parse --is-bare-repository 2>/dev/null || true)
   [ "$bare" = true ] || fail "no-mistakes gate remote is not a bare Git repository"
-  if [ -n "$program" ]; then
-    git --git-dir="$gate" config gpg.ssh.program "$program" \
-      || fail "cannot configure the no-mistakes gate signing wrapper"
-    return 0
-  fi
-  rc=0
-  git --git-dir="$gate" config --unset-all gpg.ssh.program 2>/dev/null || rc=$?
-  [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ] \
-    || fail "cannot remove the no-mistakes gate signing-agent wrapper"
+  git --git-dir="$gate" config gpg.ssh.program "$program" \
+    || fail "cannot configure the no-mistakes gate SSH signing program"
+  git --git-dir="$gate" config user.signingkey "$key" \
+    || fail "cannot configure the no-mistakes gate SSH signing key"
 }
 
 preflight() {
@@ -208,8 +207,8 @@ preflight() {
     if signing_agent_configured; then
       socket=$(signing_agent_socket)
       signing_key_in_agent "$socket" "$public"
-      signed_commit_smoke "$repo" "$format" "$key" agent
-      configure_gate_signing "$repo" "$SELF"
+      signed_commit_smoke "$repo" "$format" "$public" agent
+      configure_gate_signing "$repo" "$SELF" "$public"
       return 0
     fi
     case "$key" in
@@ -218,7 +217,7 @@ preflight() {
         ;;
     esac
     signed_commit_smoke "$repo" "$format" "$key" direct
-    configure_gate_signing "$repo" ''
+    configure_gate_signing "$repo" "$(ssh_keygen_program)" "$key"
     return 0
   fi
 
