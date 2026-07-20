@@ -116,6 +116,8 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD regressed to the apostrophe form that breaks bash -n"
   assert_grep "fm-signing-agent.sh' preflight" "$brief" \
     "no-mistakes DOD lost the signed-commit preflight"
+  assert_grep "effective private key is unavailable, or an explicitly selected signing agent is unavailable" "$brief" \
+    "no-mistakes DOD lost direct-versus-agent signing guidance"
   assert_grep "never disable signing or bypass this check unless the captain explicitly approves an unsigned fallback" "$brief" \
     "no-mistakes DOD lost the explicit unsigned-fallback authority"
   pass "fm-brief.sh: no-mistakes DOD wording and signing preflight stay intact"

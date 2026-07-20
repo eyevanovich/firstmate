@@ -317,7 +317,7 @@ When you believe it is complete, append \`done: {summary}\` to the status file a
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
 Immediately before invoking /no-mistakes, run \`$SIGNING_PREFLIGHT preflight "\$(git rev-parse --show-toplevel)"\`.
-If configured signing is disabled or the signer is unavailable, report the blocker and stop before review work; never disable signing or bypass this check unless the captain explicitly approves an unsigned fallback.
+If configured signing is disabled, the effective private key is unavailable, or an explicitly selected signing agent is unavailable, report the blocker and stop before review work; never disable signing or bypass this check unless the captain explicitly approves an unsigned fallback.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
