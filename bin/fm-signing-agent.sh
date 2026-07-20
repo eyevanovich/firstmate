@@ -96,14 +96,14 @@ signing_required() {
 }
 
 resolved_file_path() {
-  local path=$1 directory name
+  local base=$1 path=$2 directory name
   case "$path" in
     /*)
       printf '%s\n' "$path"
       return 0
       ;;
   esac
-  directory=$(dirname "$path")
+  directory=$base/$(dirname "$path")
   name=$(basename "$path")
   directory=$(cd "$directory" 2>/dev/null && pwd -P) \
     || fail "configured SSH signing key directory is unavailable: $directory"
@@ -111,7 +111,7 @@ resolved_file_path() {
 }
 
 signing_public_key() {
-  local key=$1 public algorithm data _
+  local repo=$1 key=$2 public algorithm data _
   read -r algorithm data _ <<< "$key"
   case "$key" in
     key::*)
@@ -119,11 +119,12 @@ signing_public_key() {
       ;;
   esac
   case "$algorithm" in
-    ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-*|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-*)
+    ssh-rsa|ssh-dss|ssh-ed25519|ssh-*-cert-v01@openssh.com|ecdsa-sha2-*|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-*)
       [ -z "$data" ] \
         || fail "literal SSH user.signingkey values are unsupported; configure a private-key path or an explicit signing agent with a public-key path"
       ;;
   esac
+  key=$(resolved_file_path "$repo" "$key")
   case "$key" in
     *.pub)
       public=$key
@@ -135,7 +136,7 @@ signing_public_key() {
   [ -f "$key" ] || fail "configured SSH signing key is unavailable: $key"
   [ -f "$public" ] \
     || fail "configured SSH signing key requires a companion public key: $public"
-  resolved_file_path "$public"
+  resolved_file_path "$repo" "$public"
 }
 
 public_key_fingerprint() {
@@ -225,7 +226,7 @@ preflight() {
   [ -n "$key" ] || fail "commit signing is enabled but user.signingkey is not configured"
 
   if [ "$format" = ssh ]; then
-    public=$(signing_public_key "$key")
+    public=$(signing_public_key "$repo" "$key")
     public_key_fingerprint "$public" >/dev/null
     if signing_agent_configured; then
       socket=$(signing_agent_socket)
@@ -240,7 +241,7 @@ preflight() {
         fail "direct SSH signing requires user.signingkey to name a private key; configure config/signing-agent to use a public key"
         ;;
     esac
-    key=$(resolved_file_path "$key")
+    key=$(resolved_file_path "$repo" "$key")
     signed_commit_smoke "$repo" "$format" "$key" "$(native_ssh_keygen_program)" \
       "configured SSH private key cannot create a signed isolated commit without an agent"
     configure_gate_signing "$repo" "$(native_ssh_keygen_program)" "$key"

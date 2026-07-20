@@ -202,7 +202,7 @@ test_preflight_refuses_unusable_signing_configuration() {
 }
 
 test_preflight_rejects_unsupported_literal_key() {
-  local dir home repo gate key prefixed_key literal raw out rc
+  local dir home repo gate key prefixed_key resolved_prefixed_key literal raw certificate out rc
   dir="$TMP/literal-key"
   home="$dir/home"
   repo="$dir/repo"
@@ -227,11 +227,22 @@ test_preflight_rejects_unsupported_literal_key() {
   assert_contains "$out" "literal SSH user.signingkey values are unsupported" \
     "raw literal SSH key refusal is not actionable"
 
-  prefixed_key="$dir/ssh-signing-key"
+  certificate="ssh-ed25519-cert-v01@openssh.com ${raw#* }"
+  git -C "$repo" config user.signingkey "$certificate"
+  out=$(FM_HOME="$home" "$HELPER" preflight "$repo" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "raw SSH certificate signing key"
+  assert_contains "$out" "literal SSH user.signingkey values are unsupported" \
+    "raw SSH certificate refusal is not actionable"
+
+  prefixed_key="$repo/ssh-signing-key"
+  resolved_prefixed_key="$(cd "$repo" && pwd -P)/ssh-signing-key"
   generate_test_key "$prefixed_key"
   git -C "$repo" config user.signingkey ssh-signing-key
-  (cd "$dir" && FM_HOME="$home" "$HELPER" preflight "$repo") \
-    || fail "relative signing-key path with an algorithm-like prefix should succeed"
+  (cd "$TMP" && FM_HOME="$home" "$HELPER" preflight "$repo") \
+    || fail "repository-relative signing-key path should ignore the caller directory"
+  [ "$(git --git-dir="$gate" config --get user.signingkey)" = "$resolved_prefixed_key" ] \
+    || fail "gate did not persist the repository-relative signing-key path consistently"
   pass "unsupported literal SSH signing-key forms are rejected deliberately"
 }
 
