@@ -30,6 +30,12 @@ Dependency bots are exempt so their automation keeps working, but regular contri
 
 See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
+## Issue tracking
+
+GitHub Issues is the repository's public issue tracker.
+Use `gh-axi` for automated GitHub issue operations and consult its current help before relying on flags.
+The `tasks-axi` queue described below is private Firstmate fleet state, not contributor issue tracking.
+
 ## Repo conventions
 
 - This repo is a template for running a firstmate orchestrator agent.

@@ -1,29 +1,5 @@
 {
   "hooks": {
-    "PostCompact": [
-      {
-        "hooks": [
-          {
-            "command": "bd codex-hook PostCompact",
-            "statusMessage": "Scheduling Beads context refresh",
-            "type": "command"
-          }
-        ],
-        "matcher": "manual|auto"
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "command": "bd codex-hook PreCompact",
-            "statusMessage": "Checking Beads context",
-            "type": "command"
-          }
-        ],
-        "matcher": "manual|auto"
-      }
-    ],
     "PreToolUse": [
       {
         "hooks": [
@@ -50,16 +26,6 @@
             "type": "command"
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "command": "bd codex-hook SessionStart",
-            "statusMessage": "Loading Beads context",
-            "type": "command"
-          }
-        ],
-        "matcher": "startup|resume|clear"
       }
     ],
     "Stop": [
@@ -68,17 +34,6 @@
           {
             "command": "bash -lc 'payload=$(cat 2\u003e/dev/null || true); [ -n \"$payload\" ] || exit 0; command -v jq \u003e/dev/null 2\u003e\u00261 || exit 0; root=$(pwd -P) || exit 0; [ -x \"$root/bin/fm-turnend-guard.sh\" ] || exit 0; [ -f \"$root/AGENTS.md\" ] || exit 0; [ -f \"$root/.codex/hooks.json\" ] || exit 0; jq -e \"any(.hooks.Stop[]?.hooks[]?.command?; type == \\\"string\\\" and contains(\\\"fm-turnend-guard.sh\\\"))\" \"$root/.codex/hooks.json\" \u003e/dev/null 2\u003e\u00261 || exit 0; printf \"%s\" \"$payload\" | \"$root/bin/fm-turnend-guard.sh\"'",
             "timeout": 30,
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "command": "bd codex-hook UserPromptSubmit",
-            "statusMessage": "Refreshing Beads context",
             "type": "command"
           }
         ]
