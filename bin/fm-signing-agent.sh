@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# Make an explicitly configured SSH signing agent available to Git and to
-# isolated no-mistakes worktrees without relying on the daemon's ambient socket.
+# Prove SSH commit signing for isolated no-mistakes worktrees.
 #
 # Usage:
 #   fm-signing-agent.sh preflight <repo>
-#     When commit signing is enabled, verify the configured identity and agent,
-#     create a signed scratch commit with SSH_AUTH_SOCK removed, then configure
-#     the repo's local no-mistakes gate to use this script as gpg.ssh.program.
-#     Signing must be enabled and proven. Missing or disabled signing is refused;
-#     only the captain may approve an unsigned fallback outside this helper.
+#     When commit signing is enabled, create a signed scratch commit with
+#     SSH_AUTH_SOCK removed. A private-key user.signingkey signs directly when
+#     config/signing-agent is absent. When that config intentionally selects an
+#     agent, verify it holds the configured identity and configure the repo's
+#     local no-mistakes gate to use this script as gpg.ssh.program. Signing must
+#     be enabled and proven; only the captain may approve an unsigned fallback.
 #
 #   fm-signing-agent.sh <ssh-keygen arguments...>
-#     Git-facing wrapper mode. Read config/signing-agent, set its exact socket,
-#     and exec ssh-keygen. The config contains one absolute Unix socket path.
+#     Git-facing wrapper mode for an explicitly configured signing agent. Read
+#     config/signing-agent, set its exact socket, and exec ssh-keygen. The config
+#     contains one absolute Unix socket path.
 #
 # FM_HOME selects the active firstmate home's config/. FM_CONFIG_OVERRIDE and
-# FM_SIGNING_AGENT_CONFIG are test/operator path overrides. The config file is
-# local, gitignored, inherited by secondmate homes, and never contains a key.
+# FM_SIGNING_AGENT_CONFIG are test/operator path overrides. The optional config
+# file is local, gitignored, inherited by secondmate homes, and never has a key.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,11 +51,21 @@ signing_agent_socket() {
   printf '%s\n' "$socket"
 }
 
+signing_agent_configured() {
+  [ -e "$SIGNING_AGENT_CONFIG" ] || [ -L "$SIGNING_AGENT_CONFIG" ]
+}
+
+ssh_keygen_program() {
+  local ssh_keygen
+  ssh_keygen=${FM_SIGNING_SSH_KEYGEN_EXEC:-$(command -v ssh-keygen 2>/dev/null || true)}
+  [ -n "$ssh_keygen" ] || fail "ssh-keygen is required for SSH commit signing"
+  printf '%s\n' "$ssh_keygen"
+}
+
 ssh_keygen_exec() {
   local socket ssh_keygen
   socket=$(signing_agent_socket)
-  ssh_keygen=${FM_SIGNING_SSH_KEYGEN_EXEC:-$(command -v ssh-keygen 2>/dev/null || true)}
-  [ -n "$ssh_keygen" ] || fail "ssh-keygen is required for SSH commit signing"
+  ssh_keygen=$(ssh_keygen_program)
   SSH_AUTH_SOCK="$socket" exec "$ssh_keygen" "$@"
 }
 
@@ -77,19 +88,53 @@ signing_required() {
   esac
 }
 
+signing_public_key() {
+  local key=$1 public
+  case "$key" in
+    key::*)
+      fail "literal SSH user.signingkey values are unsupported; configure a private-key path or an explicit signing agent with a public-key path"
+      ;;
+    *.pub)
+      public=$key
+      ;;
+    *)
+      public=$key.pub
+      ;;
+  esac
+  [ -f "$key" ] || fail "configured SSH signing key is unavailable: $key"
+  [ -f "$public" ] \
+    || fail "configured SSH signing key requires a companion public key: $public"
+  printf '%s\n' "$public"
+}
+
+public_key_fingerprint() {
+  local public=$1 ssh_keygen fingerprint
+  ssh_keygen=$(ssh_keygen_program)
+  fingerprint=$("$ssh_keygen" -E sha256 -lf "$public" 2>/dev/null | awk 'NR == 1 { print $2 }') \
+    || fail "configured SSH signing public key is invalid: $public"
+  case "$fingerprint" in
+    SHA256:*) ;;
+    *) fail "configured SSH signing public key is invalid: $public" ;;
+  esac
+  printf '%s\n' "$fingerprint"
+}
+
 signing_key_in_agent() {
-  local socket=$1 key=$2 expected keys
+  local socket=$1 public=$2 expected keys fingerprints ssh_keygen
   command -v ssh-add >/dev/null 2>&1 || fail "ssh-add is required to inspect the configured signing agent"
-  expected=$(awk 'NF >= 2 { print $1 " " $2; exit }' "$key")
-  [ -n "$expected" ] || fail "configured SSH signing public key is invalid"
+  ssh_keygen=$(ssh_keygen_program)
+  expected=$(public_key_fingerprint "$public")
   keys=$(SSH_AUTH_SOCK="$socket" ssh-add -L 2>/dev/null) \
     || fail "configured signing agent did not return any public keys"
-  printf '%s\n' "$keys" | awk 'NF >= 2 { print $1 " " $2 }' | grep -Fx "$expected" >/dev/null \
+  fingerprints=$(printf '%s\n' "$keys" | "$ssh_keygen" -E sha256 -lf - 2>/dev/null) \
+    || fail "configured signing agent returned invalid public keys"
+  printf '%s\n' "$fingerprints" | awk -v expected="$expected" \
+    '$2 == expected { found = 1 } END { exit(found ? 0 : 1) }' \
     || fail "configured signing agent does not hold the configured Git signing key"
 }
 
 signed_commit_smoke() {
-  local repo=$1 format=$2 key=$3 scratch commit
+  local repo=$1 format=$2 key=$3 signing_path=$4 scratch commit
   scratch=$(mktemp -d "$repo/.fm-signing-preflight.XXXXXX" 2>/dev/null) \
     || fail "cannot create signing preflight directory inside $repo"
   trap 'rm -rf -- "$scratch"' EXIT
@@ -99,14 +144,18 @@ signed_commit_smoke() {
   git -C "$scratch" config commit.gpgsign true
   git -C "$scratch" config gpg.format "$format"
   git -C "$scratch" config user.signingkey "$key"
-  if [ "$format" = ssh ]; then
+  if [ "$format" = ssh ] && [ "$signing_path" = agent ]; then
     git -C "$scratch" config gpg.ssh.program "$SELF"
   fi
   printf '%s\n' preflight > "$scratch/probe"
   git -C "$scratch" add probe
   if [ "$format" = ssh ]; then
-    env -u SSH_AUTH_SOCK git -C "$scratch" commit -q -m 'signing preflight' \
-      || fail "configured signing agent cannot create a signed isolated commit"
+    if ! env -u SSH_AUTH_SOCK git -C "$scratch" commit -q -m 'signing preflight'; then
+      case "$signing_path" in
+        agent) fail "configured signing agent cannot create a signed isolated commit" ;;
+        direct) fail "configured SSH private key cannot create a signed isolated commit without an agent" ;;
+      esac
+    fi
   else
     git -C "$scratch" commit -q -m 'signing preflight' \
       || fail "configured signing identity cannot create a signed isolated commit"
@@ -118,8 +167,8 @@ signed_commit_smoke() {
   trap - EXIT
 }
 
-configure_gate_wrapper() {
-  local repo=$1 gate bare
+configure_gate_signing() {
+  local repo=$1 program=$2 gate bare rc
   gate=$(git -C "$repo" remote get-url no-mistakes 2>/dev/null) \
     || fail "no-mistakes is not initialized for $repo; run no-mistakes init first"
   case "$gate" in
@@ -129,12 +178,19 @@ configure_gate_wrapper() {
   [ -d "$gate" ] && [ ! -L "$gate" ] || fail "no-mistakes gate repository is unavailable"
   bare=$(git --git-dir="$gate" rev-parse --is-bare-repository 2>/dev/null || true)
   [ "$bare" = true ] || fail "no-mistakes gate remote is not a bare Git repository"
-  git --git-dir="$gate" config gpg.ssh.program "$SELF" \
-    || fail "cannot configure the no-mistakes gate signing wrapper"
+  if [ -n "$program" ]; then
+    git --git-dir="$gate" config gpg.ssh.program "$program" \
+      || fail "cannot configure the no-mistakes gate signing wrapper"
+    return 0
+  fi
+  rc=0
+  git --git-dir="$gate" config --unset-all gpg.ssh.program 2>/dev/null || rc=$?
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ] \
+    || fail "cannot remove the no-mistakes gate signing-agent wrapper"
 }
 
 preflight() {
-  local repo=${1:-} format key socket
+  local repo=${1:-} format key public socket
   [ -n "$repo" ] || fail "usage: fm-signing-agent.sh preflight <repo>"
   repo=$(cd "$repo" 2>/dev/null && pwd -P) || fail "repository path is unavailable"
   git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
@@ -147,15 +203,26 @@ preflight() {
   [ -n "$key" ] || fail "commit signing is enabled but user.signingkey is not configured"
 
   if [ "$format" = ssh ]; then
-    [ -f "$key" ] || fail "configured SSH signing public key is unavailable"
-    socket=$(signing_agent_socket)
-    signing_key_in_agent "$socket" "$key"
-    signed_commit_smoke "$repo" "$format" "$key"
-    configure_gate_wrapper "$repo"
+    public=$(signing_public_key "$key")
+    public_key_fingerprint "$public" >/dev/null
+    if signing_agent_configured; then
+      socket=$(signing_agent_socket)
+      signing_key_in_agent "$socket" "$public"
+      signed_commit_smoke "$repo" "$format" "$key" agent
+      configure_gate_signing "$repo" "$SELF"
+      return 0
+    fi
+    case "$key" in
+      *.pub)
+        fail "direct SSH signing requires user.signingkey to name a private key; configure config/signing-agent to use a public key"
+        ;;
+    esac
+    signed_commit_smoke "$repo" "$format" "$key" direct
+    configure_gate_signing "$repo" ''
     return 0
   fi
 
-  signed_commit_smoke "$repo" "$format" "$key"
+  signed_commit_smoke "$repo" "$format" "$key" direct
 }
 
 case "${1:-}" in
