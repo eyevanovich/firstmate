@@ -28,3 +28,4 @@ config/wedge-alarm
 /.agents/skills/beads
 /.pi
 /.codex
+/config/signing-agent
