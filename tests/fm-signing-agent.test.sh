@@ -244,7 +244,7 @@ test_preflight_rejects_unsupported_literal_key() {
   printf '%s\n' '#!/usr/bin/env bash' \
     'if [ "$*" = "-E sha256 -lf -" ]; then' \
     '  IFS= read -r candidate' \
-    '  case "$candidate" in' \
+    "  case \"\$candidate\" in" \
     '    "sk-ssh-ed25519-cert-v01@openssh.com synthetic-certificate-data"|"ssh-xmss@openssh.com synthetic-xmss-data") exit 0 ;;' \
     '    *) exit 1 ;;' \
     '  esac' \
