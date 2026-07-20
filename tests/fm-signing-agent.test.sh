@@ -202,7 +202,7 @@ test_preflight_refuses_unusable_signing_configuration() {
 }
 
 test_preflight_rejects_unsupported_literal_key() {
-  local dir home repo gate key prefixed_key resolved_prefixed_key literal raw certificate out rc
+  local dir home repo gate key ca_key prefixed_key resolved_prefixed_key lookalike_key parser_dir real_ssh_keygen literal raw certificate named_literal out rc
   dir="$TMP/literal-key"
   home="$dir/home"
   repo="$dir/repo"
@@ -227,13 +227,46 @@ test_preflight_rejects_unsupported_literal_key() {
   assert_contains "$out" "literal SSH user.signingkey values are unsupported" \
     "raw literal SSH key refusal is not actionable"
 
-  certificate="ssh-ed25519-cert-v01@openssh.com ${raw#* }"
+  ca_key="$dir/certificate-authority"
+  generate_test_key "$ca_key"
+  ssh-keygen -q -s "$ca_key" -I signing-test -n signing "$key.pub"
+  certificate=$(cat "$key-cert.pub")
   git -C "$repo" config user.signingkey "$certificate"
   out=$(FM_HOME="$home" "$HELPER" preflight "$repo" 2>&1)
   rc=$?
   expect_code 1 "$rc" "raw SSH certificate signing key"
   assert_contains "$out" "literal SSH user.signingkey values are unsupported" \
     "raw SSH certificate refusal is not actionable"
+
+  parser_dir="$dir/parser-bin"
+  real_ssh_keygen=$(command -v ssh-keygen)
+  mkdir -p "$parser_dir"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'if [ "$*" = "-E sha256 -lf -" ]; then' \
+    '  IFS= read -r candidate' \
+    '  case "$candidate" in' \
+    '    "sk-ssh-ed25519-cert-v01@openssh.com synthetic-certificate-data"|"ssh-xmss@openssh.com synthetic-xmss-data") exit 0 ;;' \
+    '    *) exit 1 ;;' \
+    '  esac' \
+    'fi' \
+    "exec '$real_ssh_keygen' \"\$@\"" > "$parser_dir/ssh-keygen"
+  chmod +x "$parser_dir/ssh-keygen"
+  for named_literal in \
+    'sk-ssh-ed25519-cert-v01@openssh.com synthetic-certificate-data' \
+    'ssh-xmss@openssh.com synthetic-xmss-data'; do
+    git -C "$repo" config user.signingkey "$named_literal"
+    out=$(PATH="$parser_dir:$PATH" FM_HOME="$home" "$HELPER" preflight "$repo" 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "parser-recognized raw SSH signing key"
+    assert_contains "$out" "literal SSH user.signingkey values are unsupported" \
+      "parser-recognized raw SSH key refusal is not actionable"
+  done
+
+  lookalike_key="$repo/ssh-xmss@openssh.com signing key"
+  generate_test_key "$lookalike_key"
+  git -C "$repo" config user.signingkey 'ssh-xmss@openssh.com signing key'
+  (cd "$TMP" && PATH="$parser_dir:$PATH" FM_HOME="$home" "$HELPER" preflight "$repo") \
+    || fail "parser-rejected SSH algorithm lookalike path should succeed"
 
   prefixed_key="$repo/ssh-signing-key"
   resolved_prefixed_key="$(cd "$repo" && pwd -P)/ssh-signing-key"

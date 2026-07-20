@@ -111,19 +111,15 @@ resolved_file_path() {
 }
 
 signing_public_key() {
-  local repo=$1 key=$2 public algorithm data _
-  read -r algorithm data _ <<< "$key"
+  local repo=$1 key=$2 public ssh_keygen
   case "$key" in
     key::*)
       fail "literal SSH user.signingkey values are unsupported; configure a private-key path or an explicit signing agent with a public-key path"
       ;;
   esac
-  case "$algorithm" in
-    ssh-rsa|ssh-dss|ssh-ed25519|ssh-*-cert-v01@openssh.com|ecdsa-sha2-*|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-*)
-      [ -z "$data" ] \
-        || fail "literal SSH user.signingkey values are unsupported; configure a private-key path or an explicit signing agent with a public-key path"
-      ;;
-  esac
+  ssh_keygen=$(native_ssh_keygen_program)
+  printf '%s\n' "$key" | "$ssh_keygen" -E sha256 -lf - >/dev/null 2>&1 \
+    && fail "literal SSH user.signingkey values are unsupported; configure a private-key path or an explicit signing agent with a public-key path"
   key=$(resolved_file_path "$repo" "$key")
   case "$key" in
     *.pub)
