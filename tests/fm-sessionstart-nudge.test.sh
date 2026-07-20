@@ -5,9 +5,11 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-sessionstart-nudge)
+fm_test_tmproot fm-sessionstart-nudge >/dev/null
+TMP_ROOT=${FM_TEST_CLEANUP_DIRS[0]}
 NUDGE="$ROOT/bin/fm-sessionstart-nudge.sh"
 NUDGE_LINE="Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions."
+unset NO_MISTAKES_GATE
 fm_git_identity fmtest fmtest@example.invalid
 
 make_primary() {
@@ -142,9 +144,9 @@ EOF
 
 test_tracked_harness_registration() {
   local command pi_plugin opencode_plugin
-  jq -e '.hooks.SessionStart | length == 1' "$ROOT/.claude/settings.json" >/dev/null \
+  jq -e '[.hooks.SessionStart[] | select(any(.hooks[]?.command?; contains("fm-sessionstart-nudge.sh")))] | length == 1' "$ROOT/.claude/settings.json" >/dev/null \
     || fail "Claude SessionStart hook is not registered exactly once"
-  jq -e '.hooks.SessionStart[0].matcher == "startup|resume|clear"' "$ROOT/.claude/settings.json" >/dev/null \
+  jq -e 'any(.hooks.SessionStart[]; .matcher == "startup|resume|clear" and any(.hooks[]?.command?; contains("fm-sessionstart-nudge.sh")))' "$ROOT/.claude/settings.json" >/dev/null \
     || fail "Claude SessionStart matcher must include startup/resume/clear and exclude compact"
   jq -e 'any(.hooks.SessionStart[]?.hooks[]?.command?; contains("fm-sessionstart-nudge.sh"))' \
     "$ROOT/.claude/settings.json" >/dev/null || fail "Claude SessionStart hook does not invoke the wrapper"
