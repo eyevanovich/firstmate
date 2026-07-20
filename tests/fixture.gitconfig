@@ -1,0 +1,7 @@
+[user]
+	name = Firstmate Tests
+	email = tests@example.invalid
+[init]
+	defaultBranch = main
+[commit]
+	gpgSign = false

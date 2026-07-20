@@ -36,12 +36,15 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 SESSION="fm-lab-prune-safety-e2e-$$"
 export HERDR_SESSION="$SESSION"
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-prune-safety.XXXXXX")
+NEUTRAL_CWD=
 cleanup_all() {
-  herdr_safe_stop_and_delete "$SESSION"
   rm -rf "$SCRATCH"
+  herdr_safe_stop_and_delete "$SESSION"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+herdr_test_enter_neutral_cwd "$SESSION" || fail "could not enter the neutral Herdr server cwd"
+NEUTRAL_CWD=$HERDR_TEST_NEUTRAL_CWD
 
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
@@ -59,6 +62,10 @@ LIVE_CWD="$SCRATCH/firstmate"
 mkdir -p "$LIVE_CWD"
 
 fm_backend_herdr_server_ensure "$SESSION" || fail "could not start the isolated session's server"
+STARTUP_LABEL=$(herdr workspace list --session "$SESSION" 2>&1 | jq -r '.result.workspaces[]? | select(.workspace_id == "w1") | .label')
+[ "$STARTUP_LABEL" != firstmate ] \
+  || fail "the lab server inherited a firstmate startup cwd instead of the neutral test cwd"
+pass "regression: the lab server's startup workspace is not labeled 'firstmate'"
 
 CREATE_OUT=$(fm_backend_herdr_cli "$SESSION" workspace create --cwd "$LIVE_CWD" --label firstmate --no-focus) \
   || fail "could not create the label-collision startup workspace"
@@ -151,4 +158,5 @@ pass "happy path: a genuinely fresh workspace's seeded default tab is still prun
 fm_backend_herdr_kill "$SESSION:$HAPPY_PANE"
 
 cleanup_all
+[ ! -e "$NEUTRAL_CWD" ] || fail "neutral Herdr server cwd leaked after guarded teardown"
 trap - EXIT

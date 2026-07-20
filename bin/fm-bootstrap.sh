@@ -7,6 +7,7 @@
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
+#                 "NEEDS_GITLAB_AUTH: <host>",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
@@ -77,6 +78,10 @@
 #          clones, or repair instructions.
 #          Unset/0 (the default) runs every sweep exactly as before - this flag
 #          is purely additive.
+#        fm-bootstrap.sh check-forge github
+#          Non-mutating readiness check for a GitHub add/create operation.
+#          Prints the same deduplicated gh, gh-axi, and auth diagnostics as
+#          session bootstrap and exits non-zero until all three are ready.
 #        fm-bootstrap.sh install <tool>...
 #          Install the named tools (only ones the captain approved).
 set -u
@@ -100,6 +105,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-forge-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-forge-lib.sh"
 
 fleet_sync_origin_backed_project_count() {
   local count proj
@@ -424,7 +431,7 @@ secondmate_liveness_sweep() {
 
 install_cmd() {
   case "$1" in
-    tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
+    tmux|node|git|gh|glab|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
     treehouse) echo "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh" ;;
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
@@ -450,12 +457,78 @@ missing_tool_diagnostic() {
   echo "MISSING: $tool (install: $(install_cmd "$tool"))"
 }
 
+MISSING_TOOLS_REPORTED=""
+report_missing_tool_once() {
+  local tool=$1
+  case " $MISSING_TOOLS_REPORTED " in
+    *" $tool "*) return 0 ;;
+  esac
+  MISSING_TOOLS_REPORTED="$MISSING_TOOLS_REPORTED $tool"
+  missing_tool_diagnostic "$tool"
+}
+
+github_forge_diagnostics() {
+  local failed=0
+  if ! command -v gh >/dev/null 2>&1; then
+    report_missing_tool_once gh
+    failed=1
+  fi
+  if ! command -v gh-axi >/dev/null 2>&1; then
+    report_missing_tool_once gh-axi
+    failed=1
+  fi
+  if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
+    echo "NEEDS_GH_AUTH"
+    failed=1
+  fi
+  [ "$failed" -eq 0 ]
+}
+
+forge_project_diagnostics() {
+  local proj remote host github_required=0 gitlab_hosts=""
+  [ -d "$PROJECTS" ] || return 0
+  for proj in "$PROJECTS"/*; do
+    [ -d "$proj" ] || continue
+    remote=$(git -C "$proj" remote get-url origin 2>/dev/null) || continue
+    case "$remote" in file://*) continue ;; esac
+    fm_forge_repo_resolve "$proj" || continue
+    case "$FM_FORGE_KIND" in
+      github)
+        github_required=1
+        ;;
+      gitlab)
+        host=$FM_FORGE_HOST
+        case " $gitlab_hosts " in
+          *" $host "*) ;;
+          *) gitlab_hosts="$gitlab_hosts $host" ;;
+        esac
+        ;;
+    esac
+  done
+
+  if [ "$github_required" -eq 1 ]; then
+    github_forge_diagnostics || true
+  fi
+
+  if [ -n "$gitlab_hosts" ]; then
+    command -v glab >/dev/null 2>&1 || report_missing_tool_once glab
+    command -v jq >/dev/null 2>&1 || report_missing_tool_once jq
+    if command -v glab >/dev/null 2>&1; then
+      for host in $gitlab_hosts; do
+        fm_forge_gitlab_auth "$host" || echo "NEEDS_GITLAB_AUTH: $host"
+      done
+    fi
+  fi
+}
+
 # Required-tool detection follows the RESOLVED backend, not a one-size default:
 # a universal toolchain every home needs plus the backend-specific delta owned by
-# fm_backend_required_tools (bin/fm-backend.sh). So a herdr/zellij/cmux home is
+# fm_backend_required_tools (bin/fm-backend.sh). Forge CLIs are project-scoped:
+# GitHub clones require gh + gh-axi, while GitLab clones require glab + jq.
+# So a GitLab-only home never needs GitHub tooling, a herdr/zellij/cmux home is
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
-COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
+COMMON_TOOLS="node git no-mistakes chrome-devtools-axi lavish-axi tasks-axi quota-axi"
 BACKEND=$(fm_backend_name)
 BACKEND_VALID=1
 if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
@@ -729,6 +802,14 @@ crew_dispatch_validate() {
   fi
 }
 
+if [ "${1:-}" = "check-forge" ]; then
+  [ "$#" -eq 2 ] || { echo "usage: fm-bootstrap.sh check-forge github" >&2; exit 2; }
+  case "$2" in
+    github) github_forge_diagnostics; exit $? ;;
+    *) echo "error: unsupported forge readiness check: $2" >&2; exit 2 ;;
+  esac
+fi
+
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -758,11 +839,12 @@ if [ "$BACKEND_VALID" -eq 0 ]; then
 fi
 for t in $BACKEND_TOOLS; do
   fm_backend_required_tool_available "$BACKEND" "$t" \
-    || missing_tool_diagnostic "$t"
+    || report_missing_tool_once "$t"
 done
 for t in $COMMON_TOOLS; do
-  command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
+  command -v "$t" >/dev/null || report_missing_tool_once "$t"
 done
+forge_project_diagnostics
 # The treehouse lease-support upgrade check is only relevant when the resolved
 # backend actually requires treehouse (every backend except orca, which owns its
 # own worktrees); an orca home must not be told to upgrade a provider it never uses.
@@ -776,7 +858,6 @@ fi
 if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
   echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
 fi
-gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
 # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
 # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
 # primary only; detached-HEAD worktrees and secondmate homes never trip it.

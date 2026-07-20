@@ -4,9 +4,9 @@
 # Pooled project clones do not keep their local default branch current, so this
 # helper compares remote-backed projects against origin/<default> after fetching
 # the default branch, and local-only projects against the local default branch.
-# When state/<id>.meta records pr= for an open PR, the compare side is the PR
-# head (recorded pr_head= when reachable, else refs/pull/<n>/head) so review
-# stays current after no-mistakes fix rounds push to the PR; if the PR head
+# When state/<id>.meta records pr= for an open review, the compare side is the
+# reviewed head (recorded pr_head= when reachable, else the forge's review ref)
+# so review stays current after later fix rounds push to the review; if the head
 # cannot be resolved, the script falls back to the local branch with a warning.
 # Usage: fm-review-diff.sh <task-id> [--stat]
 #   --stat prints only the stat summary; default prints stat summary plus full diff.
@@ -16,6 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 usage() {
@@ -72,33 +74,22 @@ if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; th
   git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $WT" >&2; exit 1; }
 fi
 
-pr_number_from_target() {
-  local target=$1 n
-  case "$target" in
-    '' ) return 1 ;;
-    *"/pull/"*)
-      n=${target##*/pull/}
-      n=${n%%[!0-9]*}
-      ;;
-    [0-9]*)
-      n=${target%%[!0-9]*}
-      ;;
-    *) return 1 ;;
-  esac
-  [ -n "$n" ] || return 1
-  printf '%s' "$n"
-}
-
 resolve_pr_head() {
-  local pr_url=$1 recorded_head=$2 n resolved
+  local pr_url=$1 recorded_head=$2 n resolved review_ref
   if [ -n "$recorded_head" ] \
     && git -C "$WT" cat-file -e "$recorded_head^{commit}" 2>/dev/null; then
     printf '%s' "$recorded_head"
     return 0
   fi
-  n=$(pr_number_from_target "$pr_url") || return 1
+  fm_pr_url_parse "$pr_url" || return 1
+  n=$FM_PR_NUMBER
+  case "$FM_PR_FORGE" in
+    github) review_ref="refs/pull/$n/head" ;;
+    gitlab) review_ref="refs/merge-requests/$n/head" ;;
+    *) return 1 ;;
+  esac
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
+  git -C "$WT" fetch --quiet origin "$review_ref" >/dev/null 2>&1 || return 1
   resolved=$(git -C "$WT" rev-parse --verify 'FETCH_HEAD^{commit}' 2>/dev/null) || return 1
   [ -n "$resolved" ] || return 1
   printf '%s' "$resolved"
@@ -111,7 +102,7 @@ if [ -n "$PR_URL" ]; then
   if PR_HEAD=$(resolve_pr_head "$PR_URL" "$PR_HEAD_RECORDED"); then
     COMPARE_REF=$PR_HEAD
   else
-    echo "warning: PR head unavailable; diff may lag the open PR (using local branch $BRANCH)" >&2
+    echo "warning: review head unavailable; diff may lag the open review (using local branch $BRANCH)" >&2
   fi
 fi
 

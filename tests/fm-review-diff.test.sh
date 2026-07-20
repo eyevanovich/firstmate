@@ -84,7 +84,7 @@ test_pr_meta_uses_pr_head_not_stale_local() {
 
   assert_contains "$out" '+pr-fixed' "pr-head-sha: diff should show the PR head content"
   assert_not_contains "$out" 'stale-local' "pr-head-sha: diff must not use the stale local branch"
-  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
     "pr-head-sha: should not warn when pr_head is reachable"
   pass "fm-review-diff uses recorded pr_head instead of the lagging local branch"
 }
@@ -100,9 +100,25 @@ test_pr_meta_fetches_pull_head_without_recorded_sha() {
 
   assert_contains "$out" '+pr-fixed' "pr-fetch: diff should use fetched PR head"
   assert_not_contains "$out" 'stale-local' "pr-fetch: diff must not use the stale local branch"
-  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
     "pr-fetch: should not warn when fetch succeeds"
   pass "fm-review-diff fetches refs/pull/<n>/head when pr_head= is absent"
+}
+
+test_gitlab_meta_fetches_merge_request_head_without_recorded_sha() {
+  local case_dir out
+  case_dir=$(make_case gitlab-mr-fetch)
+  stale_and_pr_commits "$case_dir"
+  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/merge-requests/9/head"
+  write_task_meta "$case_dir" "pr=https://gitlab.com/example/repo/-/merge_requests/9"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+pr-fixed' "gitlab-mr-fetch: diff should use fetched MR head"
+  assert_not_contains "$out" 'stale-local' "gitlab-mr-fetch: diff must not use the stale local branch"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
+    "gitlab-mr-fetch: should not warn when fetch succeeds"
+  pass "fm-review-diff fetches refs/merge-requests/<n>/head for GitLab"
 }
 
 test_no_pr_meta_uses_local_branch() {
@@ -115,7 +131,7 @@ test_no_pr_meta_uses_local_branch() {
 
   assert_contains "$out" '+stale-local' "no-pr-meta: diff should still use the local branch"
   assert_not_contains "$out" '+pr-fixed' "no-pr-meta: diff must not jump to the unpushed PR commit"
-  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
     "no-pr-meta: no warning without pr= in meta"
   pass "fm-review-diff without pr= keeps the worktree-branch diff"
 }
@@ -134,8 +150,8 @@ test_unreachable_pr_head_falls_back_with_warning() {
   set -e
   err=$(cat "$case_dir/stderr")
 
-  assert_contains "$err" 'warning: PR head unavailable; diff may lag the open PR' \
-    "fetch-fallback: must warn when PR head cannot be resolved"
+  assert_contains "$err" 'warning: review head unavailable; diff may lag the open review' \
+    "fetch-fallback: must warn when the review head cannot be resolved"
   assert_contains "$out" '+stale-local' "fetch-fallback: should fall back to the local branch diff"
   assert_not_contains "$out" '+pr-fixed' "fetch-fallback: must not invent a PR head diff offline"
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
@@ -143,5 +159,6 @@ test_unreachable_pr_head_falls_back_with_warning() {
 
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
+test_gitlab_meta_fetches_merge_request_head_without_recorded_sha
 test_no_pr_meta_uses_local_branch
 test_unreachable_pr_head_falls_back_with_warning

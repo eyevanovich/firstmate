@@ -114,7 +114,11 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must render literal backticks around help"
   assert_no_grep "no-mistakes' own guidance" "$brief" \
     "no-mistakes DOD regressed to the apostrophe form that breaks bash -n"
-  pass "fm-brief.sh: no-mistakes DOD wording avoids the apostrophe regression"
+  assert_grep "fm-signing-agent.sh' preflight" "$brief" \
+    "no-mistakes DOD lost the signed-commit preflight"
+  assert_grep "never disable signing or bypass this check unless the captain explicitly approves an unsigned fallback" "$brief" \
+    "no-mistakes DOD lost the explicit unsigned-fallback authority"
+  pass "fm-brief.sh: no-mistakes DOD wording and signing preflight stay intact"
 }
 
 test_ship_project_memory_wording() {
@@ -334,7 +338,7 @@ test_scout_and_secondmate_scaffold() {
     || fail "fm-brief.sh secondmate scaffold exited non-zero"
   brief="$BRIEF_HOME/data/brief-sm-q6/brief.md"
   assert_present "$brief" "secondmate charter was not scaffolded"
-  assert_grep "persistent domain supervisor" "$brief" \
+  assert_grep "persistent second mate managed by the main firstmate" "$brief" \
     "secondmate charter must declare its role"
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }

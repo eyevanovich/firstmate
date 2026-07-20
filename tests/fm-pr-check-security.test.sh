@@ -310,6 +310,16 @@ INVALID_URLS=(
   'https://github.com/o/'\''"r"'\''/pull/1'
   "https://github.com/o/r/pull/1'"
   'https://github.com/o/r/pull/1"'
+  'http://gitlab.com/g/r/-/merge_requests/1'
+  'https://GitLab.com/g/r/-/merge_requests/1'
+  'https://user@gitlab.com/g/r/-/merge_requests/1'
+  'https://gitlab.com/g/../-/merge_requests/1'
+  'https://gitlab.com/g/r/-/merge_requests/0'
+  'https://gitlab.com/g/r/-/merge_requests/01'
+  'https://gitlab.com/g/r/-/merge_requests/1/files'
+  'https://gitlab.com/g/r/-/merge_requests/1?q=x'
+  'https://gitlab.com/g/r/-/merge_requests/1#note'
+  'https://gitlab.com/g%2Fr/-/merge_requests/1'
 )
 
 # shellcheck disable=SC2016 # Literal shell syntax is task-ID test data.
@@ -359,6 +369,8 @@ test_parser_matrix() {
 https://github.com/a/b/pull/1|a|b|1
 https://github.com/my-org/repo/pull/42|my-org|repo|42
 https://github.com/Owner/repo-name_with.parts/pull/123456|Owner|repo-name_with.parts|123456
+https://gitlab.com/group/project/-/merge_requests/1|group|project|1
+https://gitlab.example.com/group/subgroup/project-name/-/merge_requests/42|group/subgroup|project-name|42
 EOF
   for row in "${INVALID_URLS[@]}"; do
     ! fm_pr_url_parse "$row" || fail "parser accepted a rejected raw-byte URL class"

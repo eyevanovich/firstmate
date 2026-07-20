@@ -499,6 +499,8 @@ metadata_pr_is_canonical() {
   MIGRATION_REPO=
   MIGRATION_NUMBER=
   fm_pr_metadata_identity_parse "$meta" || return 1
+  fm_pr_url_parse "$FM_PR_META_URL" || return 1
+  [ "$FM_PR_FORGE" = github ] || return 1
   MIGRATION_URL=$FM_PR_META_URL
   MIGRATION_OWNER=$FM_PR_META_OWNER
   MIGRATION_REPO=$FM_PR_META_REPO

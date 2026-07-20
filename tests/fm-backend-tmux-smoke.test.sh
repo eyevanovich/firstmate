@@ -62,7 +62,7 @@ pass "real tmux: fm_backend_tmux_create_task creates a window and refuses a dupl
 
 # --- send text + Enter -------------------------------------------------------
 
-tmux send-keys -t "$TARGET" "cd /tmp && PS1='smoke\$ '" Enter
+tmux send-keys -t "$TARGET" "cd /tmp" Enter
 sleep 0.3
 tmux send-keys -t "$TARGET" -l "clear" ; tmux send-keys -t "$TARGET" Enter
 sleep 0.3
@@ -98,7 +98,7 @@ pass "real tmux: fm_backend_tmux_send_literal + fm_backend_tmux_send_key Enter s
 # earliest lines scroll out of a small window) while a large one reaches back
 # far enough to still see the earliest line - the same -S -N bounding fm-peek.sh
 # and fm-watch.sh rely on for a bounded, cheap pane read.
-fm_backend_tmux_send_text_line "$TARGET" "for i in \$(seq 1 80); do echo tag-line-\$i; done"
+fm_backend_tmux_send_text_line "$TARGET" "awk 'BEGIN { for (i = 1; i <= 80; i++) print \"tag-line-\" i }'"
 sleep 0.6
 small=$(fm_backend_tmux_capture "$TARGET" 3) || fail "fm_backend_tmux_capture (small window) failed"
 case "$small" in

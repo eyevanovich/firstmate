@@ -102,6 +102,16 @@ An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisel
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
 See [`wedge-alarm.md`](wedge-alarm.md) for the channel reference and macOS verification evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
+## Signed no-mistakes fixes (config/signing-agent)
+
+Local gitignored `config/signing-agent` contains exactly one absolute path to the selected signing agent's Unix socket.
+The file contains no key or credential and is inherited by secondmate homes on the same machine.
+Immediately before a no-mistakes run, the generated ship instructions run `bin/fm-signing-agent.sh preflight <repo>`.
+The preflight verifies that the configured socket is live and owned by the current user, that the agent holds `user.signingkey`, and that an isolated scratch repository can create a signed commit with ambient `SSH_AUTH_SOCK` removed.
+Only after that proof succeeds does it configure the repository's local no-mistakes bare gate to use the same tracked script as `gpg.ssh.program`; wrapper mode reads the explicit socket and execs `ssh-keygen`, so fix commits do not depend on the daemon's stale or missing ambient agent path.
+If signing is enabled but the socket, key, or gate is unavailable, the preflight stops before review work begins.
+If signing is absent, disabled, or cannot be proven, it refuses rather than silently producing unsigned commits; an unsigned fallback remains a security-sensitive captain decision outside this helper.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` keeps test evidence outside the repo and defines `commands.test` so no-mistakes runs firstmate's bash behavior suite directly.
@@ -225,14 +235,32 @@ If no dispatch rule fits, firstmate uses the dispatch profile `default` when pre
 Because the spawn backstop is gated by file presence, any fallback path after a missing match, validation error, or missing `jq` still passes a resolved harness explicitly until the file is fixed or removed.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+## Forge providers (config/forge-hosts)
+
+Firstmate identifies `github.com` as GitHub and `gitlab.com` as GitLab without local configuration.
+Every other network origin is unsupported unless the captain explicitly confirms that an exact self-hosted origin host is GitLab and Firstmate records it in local, gitignored `config/forge-hosts` as one line `gitlab <host>`.
+The host uses the same strict hostname and optional port syntax as a clone origin, matching case-insensitively and exactly after normalization; blank lines and lines beginning with `#` are ignored, and any other line shape invalidates the registration file.
+The file is inherited by secondmate homes so provider identity stays explicit throughout the fleet.
+`bin/fm-forge-lib.sh` owns parsing and refuses ambiguous providers - including unregistered GitHub Enterprise-shaped and unknown hosts - before any `gh` or `glab` authentication or API call.
+Never populate this file by probing a host with credentials or trusting a CLI response; the captain's explicit host confirmation is the trust event.
+
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.
 It installs automatically supported tools only after you say go; manual-only tools remain for you to install from the printed instructions.
-Required tools come in two parts: a universal toolchain every home needs regardless of backend, and a per-backend delta that follows the runtime backend actually resolved for this home.
-The universal toolchain is node, git, gh with GitHub auth via `gh auth login`, no-mistakes v1.31.2 or newer, gh-axi, chrome-devtools-axi, lavish-axi, compatible tasks-axi per "Backlog backend" above, and quota-axi.
+Required tools come in three parts: a universal toolchain every home needs, a per-backend delta that follows the resolved runtime backend, and a per-forge delta derived from registered project clone origins.
+The universal toolchain is node, git, no-mistakes v1.31.2 or newer, chrome-devtools-axi, lavish-axi, compatible tasks-axi per "Backlog backend" above, and quota-axi.
 This section is the single owner of that universal toolchain list; backend guides' prerequisites point here and add only their backend-specific tools.
-In that list, no-mistakes runs the validation pipeline, gh-axi, chrome-devtools-axi, and lavish-axi cover GitHub, browser, and rich-review operations, and tasks-axi plus quota-axi back backlog mutations and quota-balanced dispatch.
+In that list, no-mistakes runs the validation pipeline, chrome-devtools-axi and lavish-axi cover browser and rich-review operations, and tasks-axi plus quota-axi back backlog mutations and quota-balanced dispatch.
+A registered GitHub clone adds `gh`, `gh-axi`, and successful `gh auth status`.
+A registered GitLab clone adds `glab`, `jq`, and successful `glab auth status --hostname <trusted-origin-host>`.
+A home with no clone on a forge is not asked to install or authenticate that forge's tools.
+Before an empty home or a home without GitHub projects starts a GitHub add/create operation, `bin/fm-bootstrap.sh check-forge github` applies the same `gh`, `gh-axi`, and authentication diagnostics and exits non-zero until all three are ready.
+The narrow `bin/fm-forge.sh` GitLab adapter derives host and project only from the clone's origin, removes ambient GitLab token variables, calls `glab api --hostname` with that trusted host and the credential stored by `glab auth login`, and emits compact JSON for issues, merge requests, and pipelines.
+Before creating, reusing, viewing, checking, merging, or polling a merge request, it requires the trusted numeric project identity plus the exact source and target branches expected from the local task and origin project.
+A passing pipeline authorizes merge only when its SHA matches the current merge-request head; an empty pipeline list remains pending unless the trusted project response explicitly reports its CI/CD builds feature as disabled.
+It deliberately exposes no raw API, project deletion, secret mutation, or repository-content write surface.
+GitLab merge polling uses a hash-registered custom check, while GitHub retains the canonical byte-static PR poll.
 The per-backend delta is required only for the backend resolved from `FM_BACKEND`, then `config/backend`, then runtime auto-detection, then default `tmux`, so a home is never told to install a tool an inactive backend or feature would need.
 That delta is owned in code by `fm_backend_required_tools` in `bin/fm-backend.sh`: the resolved backend's own session-provider CLI (`tmux`, `herdr`, `zellij`, `orca`, or `cmux`), `jq` for the JSON-emitting experimental adapters (`herdr`, `zellij`, `cmux`) whose spawn and liveness paths parse the backend's JSON output, and the `treehouse` worktree provider for every session-provider-only backend (`tmux`, `herdr`, `zellij`, `cmux`).
 Backend tool availability uses the adapter's own executable resolver, so bootstrap and spawn agree on supported non-`PATH` locations such as cmux's bundled CLI.
@@ -259,7 +287,7 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a live secondmate endpoint is skipped or respawn fails; already-live and successfully respawned endpoints are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync and reread nudges are not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero only for real propagation errors.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `forge-hosts`, `signing-agent`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero only for real propagation errors.
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
 

@@ -8,18 +8,18 @@
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
 # upstream-contribution PRs pushed to a fork satisfy this in any mode), OR - for a
-# normal ship task whose commits are not so reachable - when its PR is merged and
-# GitHub reports a PR head that contains the current local work, or its content is
-# already present in the up-to-date default branch. This recognizes the common
-# squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
-# on a remote yet the change is fully in main.
-# The PR itself is resolved from the task's recorded pr= when present, or - when
-# no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
-# where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
-# up a merged PR whose head branch matches the worktree's branch, fetching its head
-# via refs/pull/<n>/head when the branch itself was deleted. So a missing pr= never
-# by itself causes a false refusal of landed work.
-# A gh lookup error falls back to the content check; if that is also inconclusive,
+# normal ship task whose commits are not so reachable - when its pull or merge
+# request is merged and the forge reports a reviewed head that contains the current
+# local work, or its content is already present in the up-to-date default branch.
+# This recognizes the common squash-merge-then-delete-branch flow, where the branch's
+# own commits live nowhere on a remote yet the change is fully in main.
+# The review itself is resolved from the task's recorded pr= when present, or - when
+# no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no CI, where
+# the usual "checks green" fm-pr-check.sh trigger never fires) - by looking up a
+# merged review whose head branch matches the worktree's branch, fetching its head
+# via GitHub refs/pull/<n>/head or GitLab refs/merge-requests/<n>/head when the branch
+# itself was deleted. So a missing pr= never by itself causes a false refusal.
+# A forge lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
 # local-only projects additionally accept work merged into the local default
@@ -122,6 +122,17 @@ if [ "$BACKEND" = orca ]; then
 fi
 HOME_PATH=$(grep '^home=' "$META" | cut -d= -f2- || true)
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
+PR_FORGE=
+PR_TARGET=
+GITLAB_MR_PROVEN=0
+if [ -n "$PR_URL" ]; then
+  fm_pr_metadata_identity_parse "$META" || {
+    echo "error: recorded PR metadata is invalid" >&2
+    exit 1
+  }
+  PR_FORGE=$FM_PR_FORGE
+  PR_TARGET=$FM_PR_META_TARGET
+fi
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
 # (/tmp/fm-<id>/); absent for tasks spawned before that change, so tolerate empty.
 TASK_TMP=$(grep '^tasktmp=' "$META" | cut -d= -f2- || true)
@@ -258,14 +269,22 @@ remove_pr_poll_artifacts() {
   fi
 }
 
-# Resolve the PR number for a worktree branch via gh-axi. Echoes the number on a
-# single match and returns 0; returns non-zero on no match or any lookup failure,
-# so the caller treats it as "no PR found" (fail-safe).
+# Resolve the pull or merge request number for a worktree branch.
+# A single match is printed; no match or any lookup failure is fail-safe.
 pr_number_from_branch() {
   local branch=$1 out n
   [ -n "$branch" ] && [ "$branch" != HEAD ] || return 1
-  out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
-  n=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
+  if fm_forge_repo_resolve "$WT" && [ "$FM_FORGE_KIND" = gitlab ]; then
+    if [ -n "$PR_TARGET" ]; then
+      out=$("$SCRIPT_DIR/fm-forge.sh" mr-find "$WT" "$branch" --target "$PR_TARGET" 2>/dev/null) || return 1
+    else
+      out=$("$SCRIPT_DIR/fm-forge.sh" mr-find "$WT" "$branch" 2>/dev/null) || return 1
+    fi
+    n=$(jq -er '.mr.iid | numbers' <<< "$out" 2>/dev/null) || return 1
+  else
+    out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
+    n=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
+  fi
   [ -n "$n" ] || return 1
   printf '%s' "$n"
 }
@@ -278,6 +297,10 @@ pr_number_from_target() {
       n=${target##*/pull/}
       n=${n%%[!0-9]*}
       ;;
+    *"/-/merge_requests/"*)
+      n=${target##*/-/merge_requests/}
+      n=${n%%[!0-9]*}
+      ;;
     [0-9]*)
       n=${target%%[!0-9]*}
       ;;
@@ -288,11 +311,21 @@ pr_number_from_target() {
 }
 
 ensure_commit_object() {
-  local target=$1 commit=$2 n
+  local target=$1 commit=$2 n forge
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null && return 0
   n=$(pr_number_from_target "$target") || return 1
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
+  forge=
+  if fm_pr_url_parse "$target"; then
+    forge=$FM_PR_FORGE
+  elif fm_forge_repo_resolve "$WT"; then
+    forge=$FM_FORGE_KIND
+  fi
+  case "$forge" in
+    gitlab) git -C "$WT" fetch --quiet origin "refs/merge-requests/$n/head" >/dev/null 2>&1 || return 1 ;;
+    github) git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1 ;;
+    *) return 1 ;;
+  esac
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null
 }
 
@@ -328,28 +361,47 @@ $unpushed
 EOF
 }
 
-# Is the worktree's PR merged for local work contained in that PR? Resolves the
-# PR from the recorded pr= URL first, then from the branch name, and asks GitHub
-# for both the PR state and head. Returns non-zero when the PR is not merged, the
-# current work is not contained in the PR head, no PR is found, or any gh error
-# occurs - the caller then falls back to the content check.
+# Is the worktree's pull or merge request merged for local work contained in
+# that reviewed head? The recorded pr= URL wins, then branch discovery.
+# Any provider, lookup, containment, or fetch uncertainty falls back to the
+# content-in-default proof instead of authorizing destructive cleanup.
 pr_is_merged() {
-  local branch=$1 target view state head current
+  local branch=$1 target view state head current forge
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
   else
     target=$(pr_number_from_branch "$branch") || return 1
   fi
   [ -n "$target" ] || return 1
-  view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
-  state=${view%%$'\t'*}
-  head=${view#*$'\t'}
-  [ "$state" != "$view" ] || return 1
+  forge=
+  if fm_pr_url_parse "$target"; then
+    forge=$FM_PR_FORGE
+  elif fm_forge_repo_resolve "$WT"; then
+    forge=$FM_FORGE_KIND
+  fi
+  case "$forge" in
+    gitlab)
+      if [ -n "$PR_TARGET" ]; then
+        view=$("$SCRIPT_DIR/fm-forge.sh" mr-view "$WT" "$target" --target "$PR_TARGET" 2>/dev/null) || return 1
+      else
+        view=$("$SCRIPT_DIR/fm-forge.sh" mr-view "$WT" "$target" 2>/dev/null) || return 1
+      fi
+      state=$(jq -er '.mr.state | strings' <<< "$view" 2>/dev/null) || return 1
+      head=$(jq -er '.mr.sha | strings' <<< "$view" 2>/dev/null) || return 1
+      ;;
+    github)
+      view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
+      state=${view%%$'\t'*}
+      head=${view#*$'\t'}
+      [ "$state" != "$view" ] || return 1
+      ;;
+    *) return 1 ;;
+  esac
   case "$state" in
     MERGED|merged) ;;
     *) return 1 ;;
   esac
-  [ -n "$head" ] || return 1
+  fm_pr_head_valid "$head" || return 1
   ensure_commit_object "$target" "$head" || return 1
   current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
   git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null && return 0
@@ -388,8 +440,31 @@ content_in_default() {
 # only for genuinely unlanded work.
 work_is_landed() {
   local branch=$1
+  if [ "$PR_FORGE" = gitlab ]; then
+    [ "$GITLAB_MR_PROVEN" -eq 1 ]
+    return
+  fi
   pr_is_merged "$branch" && return 0
   content_in_default
+}
+
+authorize_recorded_gitlab_cleanup() {
+  local branch
+  [ "$FORCE" != "--force" ] || return 0
+  [ "$PR_FORGE" = gitlab ] || return 0
+  inspectable_git_worktree "$WT" || {
+    echo "REFUSED: recorded GitLab merge request has no inspectable local worktree." >&2
+    return 1
+  }
+  branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
+    echo "REFUSED: recorded GitLab merge request has no inspectable task branch." >&2
+    return 1
+  }
+  if ! pr_is_merged "$branch"; then
+    echo "REFUSED: recorded GitLab merge request is not canonically proven merged." >&2
+    return 1
+  fi
+  GITLAB_MR_PROVEN=1
 }
 
 backlog_refresh_reminder() {
@@ -1018,6 +1093,7 @@ remove_secondmate_registry_entry() {
 }
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
+authorize_recorded_gitlab_cleanup || exit 1
 
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT

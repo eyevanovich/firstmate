@@ -39,6 +39,15 @@ export FM_GATE_REFUSE_BYPASS=1
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Fixture repositories must not inherit host signing keys or other user Git
+# settings. Local repository config still overrides this test-only baseline, so
+# the signing-agent suite can require and prove signed commits explicitly.
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+while IFS= read -r variable; do
+  unset "$variable"
+done < <(compgen -A variable GIT_CONFIG_KEY_; compgen -A variable GIT_CONFIG_VALUE_)
+export GIT_CONFIG_GLOBAL="$ROOT/tests/fixture.gitconfig"
+
 # --- reporters --------------------------------------------------------------
 
 fail() {

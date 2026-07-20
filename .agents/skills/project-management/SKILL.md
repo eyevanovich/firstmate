@@ -30,8 +30,8 @@ Do not overwrite or repurpose an existing path.
 
 Choose the delivery mode when adding or creating the project:
 
-- `no-mistakes` runs the full validation pipeline before a PR and is the default when the captain does not specify a mode.
-- `direct-PR` pushes and opens a PR without the no-mistakes pipeline.
+- `no-mistakes` runs the full validation pipeline before a PR and is the default for GitHub when the captain does not specify a mode.
+- `direct-PR` pushes and opens a GitHub pull request or GitLab merge request without the no-mistakes pipeline, and is the default for GitLab until no-mistakes GitLab support is verified.
 - `local-only` has no required remote or PR and lands only through the approved local fast-forward path.
 
 The optional `+yolo` posture changes routine approval authority but does not change the delivery mode.
@@ -41,16 +41,22 @@ Destructive, irreversible, and security-sensitive decisions still require captai
 ## Add or clone an existing project
 
 Confirm the source URL, local project name, delivery mode, and autonomy posture.
+Before any GitHub add path starts, run `bin/fm-bootstrap.sh check-forge github`; if it prints diagnostics, load `bootstrap-diagnostics`, resolve them, and rerun the check until it is silent.
+Public `github.com` and `gitlab.com` origins are identified directly.
+A self-hosted GitLab origin is accepted only after the captain explicitly confirms that exact host as GitLab and Firstmate records `gitlab <host>` in local `config/forge-hosts`; never infer provider identity from a hostname, ambient credential, or CLI response.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
-A `no-mistakes` project must have an `origin` remote and must complete the initialization procedure below.
-A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
+A `no-mistakes` project must have a GitHub `origin` remote and must complete the initialization procedure below.
+A `direct-PR` project needs a GitHub or GitLab `origin` remote but skips no-mistakes initialization.
+A local GitLab clone is accepted only when `bin/fm-forge.sh auth <clone>` succeeds against the host derived from that origin.
 A `local-only` project may have no remote and skips no-mistakes initialization.
 
 ## Create a project
 
-Creating a GitHub repository is outward-facing.
-Before making that remote change, propose the repository name, owner or organization, visibility, and delivery mode, defaulting visibility to private and delivery mode to `no-mistakes`, then obtain the captain's explicit consent for those values.
-Use `gh-axi` for the approved GitHub operation and consult its current help rather than relying on remembered flags.
+Creating a remote repository is outward-facing.
+Before a GitHub create path starts, run `bin/fm-bootstrap.sh check-forge github`; if it prints diagnostics, load `bootstrap-diagnostics`, resolve them, and rerun the check until it is silent.
+Before making that remote change, propose the forge, repository name, owner or organization, visibility, and delivery mode, defaulting visibility to private, GitHub delivery to `no-mistakes`, and GitLab delivery to `direct-PR`, then obtain the captain's explicit consent for those values.
+Use `gh-axi` for an approved GitHub operation and consult its current help rather than relying on remembered flags.
+The narrow GitLab adapter deliberately does not expose project creation, so the captain must create a new GitLab project through a trusted GitLab surface before Firstmate adds it.
 After remote creation succeeds, clone it locally, add the registry entry, and initialize it according to its delivery mode.
 
 For a purely `local-only` project, create a local Git repository under its unused `projects/<name>` path, add the registry entry, and make no GitHub call.
