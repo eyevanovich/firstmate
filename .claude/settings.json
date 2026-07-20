@@ -24,15 +24,6 @@
           }
         ],
         "matcher": "startup|resume|clear"
-      },
-      {
-        "hooks": [
-          {
-            "command": "bd prime --hook-json",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
       }
     ],
     "Stop": [

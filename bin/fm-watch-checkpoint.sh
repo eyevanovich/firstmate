@@ -63,8 +63,13 @@ run_with_perl_timeout() {
     }
     local $SIG{ALRM} = sub {
       kill "TERM", -$pid;
-      select undef, undef, undef, 0.2;
+      for (1 .. 20) {
+        my $reaped = waitpid($pid, 1);
+        exit 124 if $reaped == $pid;
+        select undef, undef, undef, 0.01;
+      }
       kill "KILL", -$pid;
+      waitpid $pid, 0;
       exit 124;
     };
     alarm $seconds;
