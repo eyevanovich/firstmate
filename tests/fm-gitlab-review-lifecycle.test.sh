@@ -60,13 +60,13 @@ if [ "${1:-}" = api ]; then
         wrong_target) target_branch=main ;;
         ambiguous) printf '%s\n' '[{"iid":5},{"iid":5}]'; exit 0 ;;
       esac
-      printf '{"iid":5,"project_id":314,"source_project_id":314,"target_project_id":314,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"%s","merge_commit_sha":null,"head_pipeline":{"id":9,"status":"success","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$source_branch" "$target_branch" "$FM_FAKE_HEAD" "$FM_FAKE_HEAD"
+      printf '{"iid":5,"project_id":314,"source_project_id":314,"target_project_id":314,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"%s","merge_commit_sha":null,"labels":[],"author":{"id":42,"username":"mate"},"assignees":[],"head_pipeline":{"id":9,"status":"success","sha":"%s","web_url":"https://gitlab.com/p/9"}}\n' "$state" "$source_branch" "$target_branch" "$FM_FAKE_HEAD" "$FM_FAKE_HEAD"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/pipelines/9/jobs\?*)
       printf '%s\n' '[{"id":4,"name":"test","stage":"test","status":"success","allow_failure":false,"web_url":"https://gitlab.com/j/4"}]'
       ;;
     projects/kisscut-museum%2Fkisscut-platform)
-      printf '%s\n' '{"id":314,"default_branch":"main","builds_access_level":"enabled"}'
+      printf '%s\n' '{"id":314,"default_branch":"main","archived":false,"builds_access_level":"enabled"}'
       ;;
     *)
       printf 'unexpected endpoint: %s\n' "$endpoint" >&2

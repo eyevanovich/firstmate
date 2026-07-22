@@ -241,6 +241,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
 3. Use gh-axi for GitHub operations, \
    \`$FM_ROOT/bin/fm-forge.sh\` for GitLab operations, and chrome-devtools-axi for browser operations.
+   For GitLab issue and merge-request comments or metadata/lifecycle changes, use its named guarded commands, run it with \`--help\` for exact syntax, and never call raw \`glab\`.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
@@ -356,6 +357,7 @@ $RULE1
 2. Stay inside this worktree; modify nothing outside it.
 3. Use gh-axi for GitHub operations, \
    \`$FM_ROOT/bin/fm-forge.sh\` for GitLab operations, and chrome-devtools-axi for browser operations.
+   For GitLab issue and merge-request comments or metadata/lifecycle changes, use its named guarded commands, run it with \`--help\` for exact syntax, and never call raw \`glab\`.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.

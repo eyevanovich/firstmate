@@ -55,7 +55,7 @@ emit_mr_json() {
     head_pipeline=$(printf '{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}' \
       "$pipeline" "$pipeline_sha")
   fi
-  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"head_pipeline":%s}' \
+  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"labels":["backend"],"author":{"id":42,"username":"mate"},"assignees":[],"head_pipeline":%s}' \
     "$iid" "$project_id" "$source_project_id" "$target_project_id" "$state" "$iid" \
     "$source_branch" "$target_branch" "$merge_sha" "$head_pipeline"
 }
@@ -73,12 +73,12 @@ if [ "${1:-}" = api ]; then
   endpoint=${2:-}
   case "$endpoint" in
     projects/kisscut-museum%2Fkisscut-platform/issues\?*)
-      printf '%s\n' '[{"iid":7,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","labels":["bug"],"updated_at":"2026-07-18T00:00:00Z","description":"not listed"}]'
+      printf '%s\n' '[{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z","description":"not listed"}]'
       ;;
     projects/kisscut-museum%2Fkisscut-platform/issues/7)
       long=$(printf 'x%.0s' {1..4100})
       printf '[{"bad":true}]' >/dev/null
-      printf '{"iid":7,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","description":"%s","labels":["bug"],"author":{"username":"ivan"},"assignees":[{"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z"}\n' "$long"
+      printf '{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","description":"%s","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z"}\n' "$long"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests\?*)
       scenario=${FM_FAKE_MR_LIST_SCENARIO:-exact}
@@ -126,7 +126,7 @@ if [ "${1:-}" = api ]; then
       esac
       ;;
     projects/kisscut-museum%2Fkisscut-platform)
-      printf '{"id":314,"default_branch":"main","builds_access_level":"%s"}\n' \
+      printf '{"id":314,"default_branch":"main","archived":false,"builds_access_level":"%s"}\n' \
         "${FM_FAKE_BUILDS_ACCESS_LEVEL:-enabled}"
       ;;
     *)

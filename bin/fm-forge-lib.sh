@@ -15,6 +15,8 @@ FM_FORGE_KIND=
 FM_FORGE_HOST=
 FM_FORGE_PROJECT=
 FM_FORGE_REMOTE=
+FM_FORGE_ISSUE_IID=
+FM_FORGE_ISSUE_URL=
 FM_FORGE_MR_IID=
 FM_FORGE_MR_URL=
 FM_FORGE_URL_HOST=
@@ -181,6 +183,48 @@ fm_forge_gitlab_api() {
   local host=$1 endpoint=$2
   shift 2
   fm_forge_gitlab_glab "$host" api "$endpoint" --hostname "$host" "$@"
+}
+
+fm_forge_gitlab_issue_url_parse_parts() {
+  local raw=${1-} rest host path project iid marker='/-/issues/'
+  FM_FORGE_ISSUE_IID=
+  FM_FORGE_ISSUE_URL=
+  FM_FORGE_URL_HOST=
+  FM_FORGE_URL_PROJECT=
+  case "$raw" in
+    https://*) ;;
+    *) return 1 ;;
+  esac
+  rest=${raw#https://}
+  host=${rest%%/*}
+  [ "$host" != "$rest" ] || return 1
+  path=${rest#*/}
+  case "$path" in
+    *"$marker"*) ;;
+    *) return 1 ;;
+  esac
+  project=${path%%"$marker"*}
+  iid=${path#*"$marker"}
+  fm_forge_host_valid "$host" || return 1
+  fm_forge_project_valid "$project" || return 1
+  case "$iid" in
+    ''|0|0[0-9]*|*[!0-9]*) return 1 ;;
+  esac
+  host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+  FM_FORGE_ISSUE_IID=$iid
+  FM_FORGE_URL_HOST=$host
+  FM_FORGE_URL_PROJECT=$project
+  FM_FORGE_ISSUE_URL="https://$host/$project/-/issues/$iid"
+  [ "$raw" = "$FM_FORGE_ISSUE_URL" ]
+}
+
+fm_forge_gitlab_issue_url_parse() {
+  local repo=$1 raw=${2-}
+  fm_forge_repo_resolve "$repo" || return 1
+  [ "$FM_FORGE_KIND" = gitlab ] || return 1
+  fm_forge_gitlab_issue_url_parse_parts "$raw" || return 1
+  [ "$FM_FORGE_URL_HOST" = "$FM_FORGE_HOST" ] \
+    && [ "$FM_FORGE_URL_PROJECT" = "$FM_FORGE_PROJECT" ]
 }
 
 fm_forge_gitlab_mr_url_parse_parts() {
