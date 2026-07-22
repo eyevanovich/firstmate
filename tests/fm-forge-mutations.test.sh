@@ -2,7 +2,7 @@
 # Mutation and adversarial tests for the guarded GitLab forge adapter.
 # The suite covers issue claim/status/comment/lifecycle flows, matching merge-
 # request metadata flows, idempotence, identity checks, input validation, API
-# failures, and deterministic post-mutation verification.
+# failures, exact JSON wire contracts, and deterministic post-mutation verification.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -174,6 +174,8 @@ if [ "${1:-}" = api ]; then
   endpoint=${2:-}
   method=GET
   input=''
+  input_seen=false
+  json_headers=0
   args=("$@")
   index=0
   while [ "$index" -lt "${#args[@]}" ]; do
@@ -184,12 +186,30 @@ if [ "${1:-}" = api ]; then
         ;;
       --input)
         index=$((index + 1))
-        [ "${args[$index]}" != - ] || input=$(cat)
+        if [ "${args[$index]}" = - ]; then
+          input=$(cat)
+          input_seen=true
+        fi
+        ;;
+      --header|-H)
+        index=$((index + 1))
+        [ "${args[$index]}" != 'Content-Type: application/json' ] || json_headers=$((json_headers + 1))
         ;;
     esac
     index=$((index + 1))
   done
-  [ -z "$input" ] || printf 'input=%s\n' "$input" >> "$FM_FAKE_GLAB_LOG"
+  if [ "$input_seen" = true ]; then
+    [ "$json_headers" -eq 1 ] || {
+      printf 'HTTP 415: JSON input requires exactly one application/json content type\n' >&2
+      exit 65
+    }
+    jq -e 'type == "object" and ([.. | select(. == null)] | length == 0)' \
+      <<< "$input" >/dev/null || {
+      printf 'invalid JSON mutation body\n' >&2
+      exit 64
+    }
+    printf 'input=%s\n' "$input" >> "$FM_FAKE_GLAB_LOG"
+  fi
 
   case "$endpoint" in
     user)
@@ -207,6 +227,15 @@ if [ "${1:-}" = api ]; then
     projects/kisscut-museum%2Fkisscut-platform/issues)
       [ "$method" = POST ] || exit 52
       [ "${FM_FAKE_API_FAIL:-}" != issue-create ] || exit 53
+      jq -e '
+        (keys - ["assignee_ids","description","labels","title"] | length) == 0
+        and (.title | type) == "string"
+        and (.description | type) == "string"
+        and ((has("labels") | not) or (.labels | type) == "string")
+        and ((has("assignee_ids") | not)
+          or ((.assignee_ids | type) == "array"
+            and all(.assignee_ids[]; type == "number" and . > 0 and floor == .)))
+      ' <<< "$input" >/dev/null || exit 62
       labels=$(jq -r '.labels // ""' <<< "$input")
       jq -cn --argjson payload "$input" --arg labels "$labels" '
         {iid:8,project_id:314,title:$payload.title,state:"opened",
@@ -226,6 +255,16 @@ if [ "${1:-}" = api ]; then
       iid=${endpoint##*/}
       if [ "$method" = PUT ]; then
         [ "${FM_FAKE_API_FAIL:-}" != issue-update ] || exit 54
+        jq -e '
+          length > 0
+          and (keys - ["add_labels","assignee_ids","remove_labels","state_event"] | length) == 0
+          and ((has("assignee_ids") | not)
+            or ((.assignee_ids | type) == "array"
+              and all(.assignee_ids[]; type == "number" and . > 0 and floor == .)))
+          and ((has("add_labels") | not) or (.add_labels | type) == "string")
+          and ((has("remove_labels") | not) or (.remove_labels | type) == "string")
+          and ((has("state_event") | not) or (.state_event == "close" or .state_event == "reopen"))
+        ' <<< "$input" >/dev/null || exit 62
         save_issue_update "$input"
         cat "$FM_FAKE_ISSUE_STATE_FILE"
       elif [ -e "$FM_FAKE_MUTATED_MARKER" ] && [ "${FM_FAKE_VERIFY_MISMATCH:-}" = issue-labels ]; then
@@ -242,6 +281,8 @@ if [ "${1:-}" = api ]; then
     projects/kisscut-museum%2Fkisscut-platform/issues/*/notes)
       [ "$method" = POST ] || exit 55
       [ "${FM_FAKE_API_FAIL:-}" != issue-note ] || exit 56
+      jq -e 'keys == ["body"] and (.body | type) == "string"' \
+        <<< "$input" >/dev/null || exit 62
       note=$(note_object Issue 7 501 "$(jq -c '.body' <<< "$input")")
       jq -cn --argjson note "$note" '[$note]' > "$FM_FAKE_ISSUE_NOTES_FILE"
       printf '%s\n' "$note"
@@ -254,6 +295,16 @@ if [ "${1:-}" = api ]; then
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5)
       if [ "$method" = PUT ]; then
         [ "${FM_FAKE_API_FAIL:-}" != mr-update ] || exit 57
+        jq -e '
+          length > 0
+          and (keys - ["add_labels","assignee_ids","remove_labels","state_event"] | length) == 0
+          and ((has("assignee_ids") | not)
+            or ((.assignee_ids | type) == "array"
+              and all(.assignee_ids[]; type == "number" and . > 0 and floor == .)))
+          and ((has("add_labels") | not) or (.add_labels | type) == "string")
+          and ((has("remove_labels") | not) or (.remove_labels | type) == "string")
+          and ((has("state_event") | not) or (.state_event == "close" or .state_event == "reopen"))
+        ' <<< "$input" >/dev/null || exit 62
         save_mr_update "$input"
         cat "$FM_FAKE_MR_STATE_FILE"
       else
@@ -266,6 +317,8 @@ if [ "${1:-}" = api ]; then
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5/notes)
       [ "$method" = POST ] || exit 58
       [ "${FM_FAKE_API_FAIL:-}" != mr-note ] || exit 59
+      jq -e 'keys == ["body"] and (.body | type) == "string"' \
+        <<< "$input" >/dev/null || exit 62
       note=$(note_object MergeRequest 5 601 "$(jq -c '.body' <<< "$input")")
       jq -cn --argjson note "$note" '[$note]' > "$FM_FAKE_MR_NOTES_FILE"
       printf '%s\n' "$note"
@@ -310,6 +363,20 @@ reset_case() {
 count_log() {
   local pattern=$1
   grep -c -- "$pattern" "$LOG" 2>/dev/null || true
+}
+
+test_live_415_regression_claim_uses_json_media_type() {
+  local out
+  reset_case
+  out=$(FM_FAKE_ISSUE_OWNER=none run_adapter issue-claim "$REPO" 7) \
+    || fail "issue claim JSON request should be accepted"
+  jq -e '.issue.assignees == ["mate"]' <<< "$out" >/dev/null \
+    || fail "issue claim did not read back the requested assignee"
+  assert_grep \
+    'issues/7 --hostname gitlab.com --method PUT --input - --header Content-Type: application/json' \
+    "$LOG" "issue claim JSON media type"
+  assert_grep 'input={"assignee_ids":[42]' "$LOG" "issue claim array encoding"
+  pass "issue claim sends explicit JSON media type and preserves array encoding"
 }
 
 test_issue_create_claim_and_canonical_view() {
@@ -690,6 +757,7 @@ test_issue_create_and_note_failures_are_verified() {
   pass "issue creation and comments surface API and verification failures"
 }
 
+test_live_415_regression_claim_uses_json_media_type
 test_issue_create_claim_and_canonical_view
 test_issue_claim_status_note_close_reopen_and_release
 test_issue_already_correct_and_custom_labels_are_idempotent
