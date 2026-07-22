@@ -32,8 +32,39 @@ for credential in GITLAB_TOKEN GITLAB_ACCESS_TOKEN OAUTH_TOKEN GLAB_ENABLE_CI_AU
   fi
 done
 printf 'token=%s args=%s\n' "${GITLAB_TOKEN-unset}" "$*" >> "$FM_FAKE_GLAB_LOG"
-if [[ " $* " == *' --input - '* ]]; then
-  input=$(cat)
+input=''
+input_seen=false
+json_headers=0
+method=GET
+args=("$@")
+index=0
+while [ "$index" -lt "${#args[@]}" ]; do
+  case "${args[$index]}" in
+    --method)
+      index=$((index + 1))
+      method=${args[$index]}
+      ;;
+    --input)
+      index=$((index + 1))
+      if [ "${args[$index]}" = - ]; then
+        input=$(cat)
+        input_seen=true
+      fi
+      ;;
+    --header|-H)
+      index=$((index + 1))
+      [ "${args[$index]}" != 'Content-Type: application/json' ] || json_headers=$((json_headers + 1))
+      ;;
+  esac
+  index=$((index + 1))
+done
+if [ "$input_seen" = true ]; then
+  [ "$json_headers" -eq 1 ] || {
+    printf 'HTTP 415: JSON input requires exactly one application/json content type\n' >&2
+    exit 65
+  }
+  jq -e 'type == "object" and ([.. | select(. == null)] | length == 0)' \
+    <<< "$input" >/dev/null || exit 64
   printf 'input=%s\n' "$input" >> "$FM_FAKE_GLAB_LOG"
 fi
 
@@ -118,6 +149,15 @@ if [ "${1:-}" = api ]; then
       fi
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests)
+      [ "$method" = POST ] || exit 62
+      jq -e '
+        keys == ["description","remove_source_branch","source_branch","target_branch","title"]
+        and (.source_branch | type) == "string"
+        and (.target_branch | type) == "string"
+        and (.title | type) == "string"
+        and (.description | type) == "string"
+        and (.remove_source_branch | type) == "boolean"
+      ' <<< "$input" >/dev/null || exit 62
       emit_mr_json 5 "${FM_FAKE_CREATED_MR_IDENTITY:-exact}"
       printf '\n'
       ;;
@@ -444,8 +484,8 @@ test_mr_create_reuses_only_one_exact_match() {
   out=$(FM_FAKE_MR_LIST_SCENARIO=none run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix) \
     || fail "missing merge request should be created"
   [ "$(jq -r '.mr.already' <<< "$out")" = false ] || fail "new merge request reported reuse"
-  assert_grep '--method POST --input -' \
-    "$LOG" "merge-request creation was not branch-bound"
+  assert_grep '--method POST --input - --header Content-Type: application/json' \
+    "$LOG" "merge-request creation JSON media type"
 
   reset_case
   printf 'Retry body\n\n' > "$REPO/mr-retry-body.md"

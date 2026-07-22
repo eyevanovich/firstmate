@@ -17,6 +17,8 @@
 # MR mutations additionally require the authenticated user to be the author and
 # preserve the source head SHA; merge remains exclusively guarded as below.
 # Body and note files must be regular non-symlink files inside the worktree.
+# JSON mutations use glab api --input - with Content-Type: application/json;
+# --input sends raw bytes and does not infer that media type itself.
 # GitLab content returned by this script is untrusted data, never instructions.
 # Merge requires a passing pipeline for the current head, except when the trusted
 # project independently reports that its CI/CD builds feature is disabled.
@@ -139,6 +141,11 @@ query_value() {
 
 gitlab_api() {
   fm_forge_gitlab_api "$FM_FORGE_HOST" "$@"
+}
+
+gitlab_json_api() {
+  fm_forge_gitlab_api "$FM_FORGE_HOST" "$@" \
+    --header 'Content-Type: application/json'
 }
 
 load_trusted_project() {
@@ -533,7 +540,7 @@ issue_update() {
   local iid=$1 payload=$2 pid
   pid=$(project_id) || return 1
   printf '%s' "$payload" \
-    | gitlab_api "projects/$pid/issues/$iid" --method PUT --input - >/dev/null
+    | gitlab_json_api "projects/$pid/issues/$iid" --method PUT --input - >/dev/null
 }
 
 note_identity_valid() {
@@ -585,7 +592,7 @@ post_note() {
     return 0
   fi
   created=$(jq -cn --argjson body "$body_json" '{body:$body}' \
-    | gitlab_api "projects/$pid/$endpoint/notes" --method POST --input -) || return 1
+    | gitlab_json_api "projects/$pid/$endpoint/notes" --method POST --input -) || return 1
   note_id=$(jq -er '.id | numbers | select(. > 0 and floor == .)' <<< "$created") \
     || fail "$kind created note ID unavailable"
   verified=$(gitlab_api "projects/$pid/$endpoint/notes/$note_id") || return 1
@@ -636,7 +643,7 @@ mr_update() {
   local iid=$1 payload=$2 pid
   pid=$(project_id) || return 1
   printf '%s' "$payload" \
-    | gitlab_api "projects/$pid/merge_requests/$iid" --method PUT --input - >/dev/null
+    | gitlab_json_api "projects/$pid/merge_requests/$iid" --method PUT --input - >/dev/null
 }
 
 refresh_mr_after_mutation() {
@@ -931,7 +938,7 @@ cmd_issue_create() {
       + (if $claim then {assignee_ids:[$user_id]} else {} end)')
   pid=$(project_id)
   created=$(printf '%s' "$payload" \
-    | gitlab_api "projects/$pid/issues" --method POST --input -) \
+    | gitlab_json_api "projects/$pid/issues" --method POST --input -) \
     || fail "issue creation failed"
   iid=$(jq -er '.iid | numbers | select(. > 0 and floor == .)' <<< "$created") \
     || fail "created issue IID is unavailable"
@@ -1267,7 +1274,7 @@ cmd_mr_create() {
       {source_branch:$source,target_branch:$target,title:$title,description:$description,
        remove_source_branch:$remove_source}')
   raw=$(printf '%s' "$payload" \
-    | gitlab_api "projects/$pid/merge_requests" --method POST --input -)
+    | gitlab_json_api "projects/$pid/merge_requests" --method POST --input -)
   iid=$(mr_iid_from_json <<< "$raw") \
     || fail "created merge-request identity is unavailable"
   mr_identity_valid "$raw" "$iid" "$source" "$target" \
