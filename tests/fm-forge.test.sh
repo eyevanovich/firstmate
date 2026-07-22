@@ -100,12 +100,12 @@ if [ "${1:-}" = api ]; then
       printf '%s\n' '{"id":42,"username":"mate","state":"active","locked":false}'
       ;;
     projects/kisscut-museum%2Fkisscut-platform/issues\?*)
-      printf '%s\n' '[{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z","description":"not listed"}]'
+      printf '%s\n' '[{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z","description":"not listed"}]'
       ;;
     projects/kisscut-museum%2Fkisscut-platform/issues/7)
       long=$(printf 'x%.0s' {1..4100})
       printf '[{"bad":true}]' >/dev/null
-      printf '{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","description":"%s","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z"}\n' "$long"
+      printf '{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7","description":"%s","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z"}\n' "$long"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests\?*)
       scenario=${FM_FAKE_MR_LIST_SCENARIO:-exact}
@@ -329,8 +329,11 @@ test_canonical_resource_urls_share_strict_validation() {
   local command url out rc
   reset_case
   run_adapter issue-view "$REPO" \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7' >/dev/null \
+    || fail "canonical work-item URL should resolve"
+  run_adapter issue-view "$REPO" \
     'https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7' >/dev/null \
-    || fail "canonical issue URL should resolve"
+    || fail "legacy canonical issue URL should resolve"
   run_adapter mr-view "$REPO" \
     'https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5' >/dev/null \
     || fail "canonical merge-request URL should resolve"
@@ -342,12 +345,17 @@ test_canonical_resource_urls_share_strict_validation() {
     expect_code 1 "$rc" "$command malformed canonical URL"
     [ ! -s "$LOG" ] || fail "$command malformed canonical URL reached credentials"
   done <<'CASES'
-issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/07
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/07
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7?x=1
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7#fragment
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7/extra
+issue-view|https://gitlab.com/kisscut-museum/other/-/work_items/7
 issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7?x=1
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7/extra
 issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/7
 mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/05
 mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5#fragment
-mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/5
+mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/5
 CASES
   pass "issue and merge-request URLs share strict canonical validation"
 }

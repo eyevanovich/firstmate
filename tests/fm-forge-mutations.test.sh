@@ -53,19 +53,20 @@ issue_default() {
   jq -cn --argjson iid "$iid" --arg state "$state" --arg description "$description" \
     --argjson labels "$labels" --argjson assignees "$owner" '
       {iid:$iid,project_id:314,title:"Fix cutter",state:$state,
-       web_url:("https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/" + ($iid|tostring)),
+       web_url:("https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/" + ($iid|tostring)),
        description:$description,labels:$labels,author:{id:7,username:"ivan"},
        assignees:$assignees,updated_at:"2026-07-18T00:00:00Z"}'
 }
 
 load_issue() {
-  local iid=${1:-7}
+  local iid=${1:-7} web_url
   if [ ! -s "$FM_FAKE_ISSUE_STATE_FILE" ]; then
     issue_default "$iid" > "$FM_FAKE_ISSUE_STATE_FILE"
   fi
-  jq --argjson iid "$iid" '
+  web_url=${FM_FAKE_ISSUE_WEB_URL:-https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/$iid}
+  jq --argjson iid "$iid" --arg web_url "$web_url" '
     .iid = $iid
-    | .web_url = ("https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/" + ($iid|tostring))
+    | .web_url = $web_url
   ' "$FM_FAKE_ISSUE_STATE_FILE"
 }
 
@@ -209,7 +210,7 @@ if [ "${1:-}" = api ]; then
       labels=$(jq -r '.labels // ""' <<< "$input")
       jq -cn --argjson payload "$input" --arg labels "$labels" '
         {iid:8,project_id:314,title:$payload.title,state:"opened",
-         web_url:"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/8",
+         web_url:"https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/8",
          description:($payload.description // ""),
          labels:(if ($labels|length)>0 then ($labels|split(",")) else [] end),
          author:{id:42,username:"mate"},
@@ -323,11 +324,14 @@ test_issue_create_claim_and_canonical_view() {
   jq -e '.issue.labels == ["bug","status::in-progress"]' <<< "$out" >/dev/null \
     || fail "created issue labels mismatch"
   out=$(run_adapter issue-view "$REPO" \
-    'https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/8') \
-    || fail "canonical created issue URL should resolve"
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/8') \
+    || fail "canonical created work-item URL should resolve"
   [ "$(jq -r '.issue.url' <<< "$out")" = \
-    'https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/8' ] \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/8' ] \
     || fail "canonical issue read-back mismatch"
+  run_adapter issue-view "$REPO" \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/8' >/dev/null \
+    || fail "legacy canonical issue URL should resolve"
   pass "issue creation validates labels, optional claim, identity, and canonical read-back"
 }
 
@@ -464,7 +468,7 @@ test_malformed_targets_labels_and_files_are_rejected() {
   ln -s "$outside" "$symlink"
   : > "$empty"
   before=$(wc -l < "$LOG")
-  for target in 0 'https://attacker.example/kisscut-museum/kisscut-platform/-/issues/7'; do
+  for target in 0 'https://attacker.example/kisscut-museum/kisscut-platform/-/work_items/7'; do
     out=$(run_adapter issue-view "$REPO" "$target" 2>&1)
     rc=$?
     expect_code 1 "$rc" "malformed issue target $target"
@@ -495,6 +499,25 @@ test_malformed_targets_labels_and_files_are_rejected() {
   assert_contains "$out" "user identity is unavailable" "malformed username refusal"
   assert_no_grep '--method PUT' "$LOG" "malformed username still mutated issue"
   pass "malformed targets, labels, usernames, and non-regular note files are rejected"
+}
+
+test_issue_api_identity_rejects_adjacent_work_item_urls() {
+  local url out rc
+  for url in \
+    'https://attacker.example/kisscut-museum/kisscut-platform/-/work_items/7' \
+    'https://gitlab.com/other/project/-/work_items/7' \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/8' \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7/extra' \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7?x=1' \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/7#fragment'; do
+    reset_case
+    out=$(FM_FAKE_ISSUE_WEB_URL="$url" run_adapter issue-claim "$REPO" 7 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "untrusted issue API URL $url"
+    assert_contains "$out" "identity does not match" "issue API identity refusal"
+    assert_no_grep '--method PUT' "$LOG" "untrusted issue API URL still mutated"
+  done
+  pass "issue API identity rejects foreign, mismatched, and malformed work-item URLs"
 }
 
 test_untrusted_project_and_api_failures_stop_safely() {
@@ -674,6 +697,7 @@ test_issue_release_ready_preserves_unrelated_labels
 test_issue_ownership_conflicts_stop_before_mutation
 test_missing_archived_and_malformed_labels_stop_before_mutation
 test_malformed_targets_labels_and_files_are_rejected
+test_issue_api_identity_rejects_adjacent_work_item_urls
 test_untrusted_project_and_api_failures_stop_safely
 test_post_mutation_verification_mismatch_is_reported
 test_merge_request_metadata_lifecycle_and_notes

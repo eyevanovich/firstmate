@@ -191,7 +191,7 @@ fm_forge_gitlab_resource_url_parse_parts() {
   FM_FORGE_RESOURCE_URL=
   FM_FORGE_URL_HOST=
   FM_FORGE_URL_PROJECT=
-  case "$resource" in issues|merge_requests) ;; *) return 1 ;; esac
+  case "$resource" in issues|work_items|merge_requests) ;; *) return 1 ;; esac
   marker="/-/$resource/"
   case "$raw" in
     https://*) ;;
@@ -221,10 +221,15 @@ fm_forge_gitlab_resource_url_parse_parts() {
 }
 
 fm_forge_gitlab_issue_url_parse_parts() {
-  local raw=${1-}
+  local raw=${1-} resource
   FM_FORGE_ISSUE_IID=
   FM_FORGE_ISSUE_URL=
-  fm_forge_gitlab_resource_url_parse_parts "$raw" issues || return 1
+  case "$raw" in
+    */-/issues/*) resource=issues ;;
+    */-/work_items/*) resource=work_items ;;
+    *) return 1 ;;
+  esac
+  fm_forge_gitlab_resource_url_parse_parts "$raw" "$resource" || return 1
   FM_FORGE_ISSUE_IID=$FM_FORGE_RESOURCE_IID
   FM_FORGE_ISSUE_URL=$FM_FORGE_RESOURCE_URL
 }

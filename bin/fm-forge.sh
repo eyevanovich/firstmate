@@ -259,13 +259,14 @@ resolve_issue_iid() {
 }
 
 issue_identity_valid() {
-  local raw=$1 iid=$2 expected_url
-  expected_url="https://$FM_FORGE_HOST/$FM_FORGE_PROJECT/-/issues/$iid"
+  local raw=$1 iid=$2 issues_url work_items_url
+  issues_url="https://$FM_FORGE_HOST/$FM_FORGE_PROJECT/-/issues/$iid"
+  work_items_url="https://$FM_FORGE_HOST/$FM_FORGE_PROJECT/-/work_items/$iid"
   jq -e --argjson iid "$iid" --argjson project_id "$FM_GITLAB_PROJECT_ID" \
-    --arg url "$expected_url" '
+    --arg issues_url "$issues_url" --arg work_items_url "$work_items_url" '
       .iid == $iid
       and .project_id == $project_id
-      and .web_url == $url
+      and (.web_url == $issues_url or .web_url == $work_items_url)
       and (.state == "opened" or .state == "closed")
       and (.labels | type) == "array"
       and all(.labels[]; type == "string")
