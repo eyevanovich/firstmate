@@ -552,16 +552,28 @@ test_merge_request_metadata_lifecycle_and_notes() {
   local out before
   reset_case
   printf 'MR update.\n' > "$REPO/mr-note.md"
-  out=$(run_adapter mr-claim "$REPO" 5) || fail "merge-request claim should succeed"
-  jq -e '.mr.assignees == ["mate"]' <<< "$out" >/dev/null || fail "merge-request claim mismatch"
-  before=$(count_log 'input={"assignee_ids":\[42\]}')
+  out=$(FM_FAKE_MR_LABELS='["backend","status::blocked","ready-for-agent"]' \
+    run_adapter mr-claim "$REPO" 5) || fail "merge-request claim should succeed"
+  jq -e '.mr.assignees == ["mate"] and .mr.labels == ["backend","status::in-progress"]' \
+    <<< "$out" >/dev/null || fail "merge-request claim mismatch"
+  before=$(count_log 'input={"assignee_ids":\[42\],"add_labels":"status::in-progress"')
   run_adapter mr-claim "$REPO" 5 >/dev/null || fail "merge-request claim retry should succeed"
-  [ "$(count_log 'input={"assignee_ids":\[42\]}')" -eq "$before" ] \
+  [ "$(count_log 'input={"assignee_ids":\[42\],"add_labels":"status::in-progress"')" -eq "$before" ] \
     || fail "merge-request claim retry mutated twice"
+
+  out=$(run_adapter mr-status "$REPO" 5 --status blocked) \
+    || fail "merge-request blocked status should succeed"
+  jq -e '.mr.labels == ["backend","status::blocked"]' <<< "$out" >/dev/null \
+    || fail "merge-request blocked status mismatch"
+  out=$(run_adapter mr-status "$REPO" 5 --status deferred) \
+    || fail "merge-request deferred status should succeed"
+  jq -e '.mr.labels == ["backend","status::deferred"]' <<< "$out" >/dev/null \
+    || fail "merge-request deferred status mismatch"
 
   out=$(run_adapter mr-labels "$REPO" 5 --add docs --remove backend) \
     || fail "merge-request labels should update"
-  jq -e '.mr.labels == ["docs"]' <<< "$out" >/dev/null || fail "merge-request labels mismatch"
+  jq -e '.mr.labels == ["docs","status::deferred"]' <<< "$out" >/dev/null \
+    || fail "merge-request labels mismatch"
   out=$(run_adapter mr-note "$REPO" 5 --body-file "$REPO/mr-note.md") \
     || fail "merge-request note should succeed"
   [ "$(jq -r '.note.already' <<< "$out")" = false ] || fail "first MR note reported reuse"
@@ -573,10 +585,22 @@ test_merge_request_metadata_lifecycle_and_notes() {
   [ "$(jq -r '.mr.state' <<< "$out")" = closed ] || fail "merge request did not close"
   out=$(run_adapter mr-reopen "$REPO" 5) || fail "merge-request reopen should succeed"
   [ "$(jq -r '.mr.state' <<< "$out")" = opened ] || fail "merge request did not reopen"
-  out=$(run_adapter mr-release "$REPO" 5) || fail "merge-request release should succeed"
-  jq -e '.mr.assignees == [] and .mr.labels == ["docs"]' <<< "$out" >/dev/null \
-    || fail "merge-request release altered unrelated metadata"
-  pass "merge-request claim, labels, notes, close, reopen, and release are guarded and idempotent"
+  out=$(run_adapter mr-release "$REPO" 5 --status ready) \
+    || fail "merge-request release should succeed"
+  jq -e '.mr.assignees == [] and .mr.labels == ["docs","ready-for-agent"]' <<< "$out" >/dev/null \
+    || fail "merge-request release did not converge metadata"
+  pass "merge-request claim, status, labels, notes, lifecycle, and release converge safely"
+}
+
+test_merge_request_workflow_labels_require_guarded_commands() {
+  local out rc
+  reset_case
+  out=$(run_adapter mr-labels "$REPO" 5 --add status::blocked 2>&1)
+  rc=$?
+  expect_code 2 "$rc" "generic merge-request workflow label update"
+  assert_contains "$out" "workflow label must use" "merge-request workflow label refusal"
+  assert_no_grep '--method PUT' "$LOG" "generic merge-request workflow label still mutated"
+  pass "merge-request workflow labels require status and release commands"
 }
 
 test_merge_request_identity_author_branch_and_head_guards() {
@@ -653,5 +677,6 @@ test_malformed_targets_labels_and_files_are_rejected
 test_untrusted_project_and_api_failures_stop_safely
 test_post_mutation_verification_mismatch_is_reported
 test_merge_request_metadata_lifecycle_and_notes
+test_merge_request_workflow_labels_require_guarded_commands
 test_merge_request_identity_author_branch_and_head_guards
 test_issue_create_and_note_failures_are_verified

@@ -46,7 +46,10 @@
 #   fm-forge.sh mr-view <repo> <iid|canonical-url> [--target <branch>]
 #   fm-forge.sh mr-find <repo> <source-branch> [--target <branch>]
 #   fm-forge.sh mr-claim <repo> <iid|canonical-url> [--target <branch>]
+#   fm-forge.sh mr-status <repo> <iid|canonical-url> [--target <branch>]
+#     --status in-progress|blocked|deferred
 #   fm-forge.sh mr-release <repo> <iid|canonical-url> [--target <branch>]
+#     --status blocked|deferred|ready
 #   fm-forge.sh mr-labels <repo> <iid|canonical-url> [--target <branch>]
 #     (--add <existing-label>|--remove <existing-label>)...
 #   fm-forge.sh mr-note <repo> <iid|canonical-url> [--target <branch>]
@@ -429,7 +432,9 @@ owner_is_none() {
 }
 
 require_self_owner() {
-  owner_is_self "$1" || fail "issue is not owned exactly by authenticated user $FM_GITLAB_USERNAME"
+  local resource=${2:-issue}
+  owner_is_self "$1" \
+    || fail "$resource is not owned exactly by authenticated user $FM_GITLAB_USERNAME"
 }
 
 require_claimable_owner() {
@@ -1178,7 +1183,7 @@ cmd_mr_create() {
 }
 
 cmd_mr_claim() {
-  local repo=$1 target=$2 expected_target='' raw sha payload verified
+  local repo=$1 target=$2 expected_target='' raw sha add_json remove_json expected payload verified
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1192,43 +1197,122 @@ cmd_mr_claim() {
   raw=$FM_GITLAB_MR_RAW
   jq -e '.state == "opened"' <<< "$raw" >/dev/null || fail "only an open merge request can be claimed"
   require_claimable_owner "$raw" "merge request"
-  if owner_is_self "$raw"; then
+  validate_active_labels status::in-progress
+  add_json=$(labels_json status::in-progress)
+  remove_json=$(labels_json status::blocked status::deferred ready-for-agent)
+  expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
+    || fail "merge-request labels are malformed"
+  if owner_is_self "$raw" && labels_match "$raw" "$expected"; then
     emit_mr "$raw"
     return 0
   fi
   sha=$(jq -r '.sha' <<< "$raw")
-  payload=$(jq -cn --argjson user_id "$FM_GITLAB_USER_ID" '{assignee_ids:[$user_id]}')
+  payload=$(jq -cn --argjson user_id "$FM_GITLAB_USER_ID" \
+    '{assignee_ids:[$user_id],add_labels:"status::in-progress",
+      remove_labels:"status::blocked,status::deferred,ready-for-agent"}')
   mr_update "$FM_FORGE_MR_IID" "$payload" || fail "merge-request claim failed"
   verified=$(refresh_mr_after_mutation "$FM_FORGE_MR_IID" "$sha") \
     || fail "merge-request claim read-back failed"
   owner_is_self "$verified" || fail "merge-request claim ownership verification mismatch"
+  labels_match "$verified" "$expected" || fail "merge-request claim status verification mismatch"
   emit_mr "$verified"
 }
 
-cmd_mr_release() {
-  local repo=$1 target=$2 expected_target='' raw sha payload verified
+cmd_mr_status() {
+  local repo=$1 target=$2 expected_target='' status='' raw sha add_label add_json remove_json expected payload verified
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --target)
         [ "$#" -ge 2 ] || usage "--target requires a value"
         expected_target=$2; shift 2 ;;
+      --status)
+        [ "$#" -ge 2 ] || usage "--status requires a value"
+        status=$2; shift 2 ;;
+      *) usage "unknown mr-status argument: $1" ;;
+    esac
+  done
+  case "$status" in in-progress|blocked|deferred) ;; *) usage "invalid merge-request status" ;; esac
+  prepare_mr_mutation "$repo" "$target" "$expected_target"
+  raw=$FM_GITLAB_MR_RAW
+  jq -e '.state == "opened"' <<< "$raw" >/dev/null \
+    || fail "only an open merge request can change status"
+  require_self_owner "$raw" "merge request"
+  add_label="status::$status"
+  validate_active_labels "$add_label"
+  case "$status" in
+    in-progress) remove_json=$(labels_json status::blocked status::deferred ready-for-agent) ;;
+    blocked) remove_json=$(labels_json status::in-progress status::deferred ready-for-agent) ;;
+    deferred) remove_json=$(labels_json status::in-progress status::blocked ready-for-agent) ;;
+  esac
+  add_json=$(labels_json "$add_label")
+  expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
+    || fail "merge-request labels are malformed"
+  if labels_match "$raw" "$expected"; then
+    emit_mr "$raw"
+    return 0
+  fi
+  sha=$(jq -r '.sha' <<< "$raw")
+  payload=$(jq -cn --arg add "$add_label" --arg remove "$(jq -r 'join(",")' <<< "$remove_json")" \
+    '{add_labels:$add,remove_labels:$remove}')
+  mr_update "$FM_FORGE_MR_IID" "$payload" || fail "merge-request status update failed"
+  verified=$(refresh_mr_after_mutation "$FM_FORGE_MR_IID" "$sha") \
+    || fail "merge-request status read-back failed"
+  require_self_owner "$verified" "merge request"
+  labels_match "$verified" "$expected" || fail "merge-request status verification mismatch"
+  emit_mr "$verified"
+}
+
+cmd_mr_release() {
+  local repo=$1 target=$2 expected_target='' status='' raw sha add_label add_json remove_json expected payload verified
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target)
+        [ "$#" -ge 2 ] || usage "--target requires a value"
+        expected_target=$2; shift 2 ;;
+      --status)
+        [ "$#" -ge 2 ] || usage "--status requires a value"
+        status=$2; shift 2 ;;
       *) usage "unknown mr-release argument: $1" ;;
     esac
   done
+  case "$status" in blocked|deferred|ready) ;; *) usage "invalid merge-request release status" ;; esac
   prepare_mr_mutation "$repo" "$target" "$expected_target"
   raw=$FM_GITLAB_MR_RAW
+  case "$status" in
+    blocked)
+      add_label=status::blocked
+      remove_json=$(labels_json status::in-progress status::deferred ready-for-agent)
+      ;;
+    deferred)
+      add_label=status::deferred
+      remove_json=$(labels_json status::in-progress status::blocked ready-for-agent)
+      ;;
+    ready)
+      add_label=ready-for-agent
+      remove_json=$(labels_json status::in-progress status::blocked status::deferred)
+      ;;
+  esac
+  validate_active_labels "$add_label"
+  add_json=$(labels_json "$add_label")
+  expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
+    || fail "merge-request labels are malformed"
   if owner_is_none "$raw"; then
+    labels_match "$raw" "$expected" \
+      || fail "unowned merge request does not match requested release status"
     emit_mr "$raw"
     return 0
   fi
   owner_is_self "$raw" || fail "merge request has a different assignee; refusing to unassign"
   sha=$(jq -r '.sha' <<< "$raw")
-  payload=$(jq -cn '{assignee_ids:[]}')
+  payload=$(jq -cn --arg add "$add_label" --arg remove "$(jq -r 'join(",")' <<< "$remove_json")" \
+    '{assignee_ids:[],add_labels:$add,remove_labels:$remove}')
   mr_update "$FM_FORGE_MR_IID" "$payload" || fail "merge-request release failed"
   verified=$(refresh_mr_after_mutation "$FM_FORGE_MR_IID" "$sha") \
     || fail "merge-request release read-back failed"
   owner_is_none "$verified" || fail "merge-request release ownership verification mismatch"
+  labels_match "$verified" "$expected" || fail "merge-request release status verification mismatch"
   emit_mr "$verified"
 }
 
@@ -1254,6 +1338,7 @@ cmd_mr_labels() {
     || usage "mr-labels requires --add or --remove"
   validate_label_args "${add[@]+"${add[@]}"}"
   validate_label_args "${remove[@]+"${remove[@]}"}"
+  require_no_workflow_labels "${add[@]+"${add[@]}"}" "${remove[@]+"${remove[@]}"}"
   add_json=$(labels_json "${add[@]+"${add[@]}"}")
   remove_json=$(labels_json "${remove[@]+"${remove[@]}"}")
   require_disjoint_labels "$add_json" "$remove_json"
@@ -1505,7 +1590,7 @@ case "$command" in
     repo=$1; shift
     cmd_mr_create "$repo" "$@"
     ;;
-  mr-view|mr-find|mr-claim|mr-release|mr-labels|mr-note|mr-checks|mr-merge|mr-poll)
+  mr-view|mr-find|mr-claim|mr-status|mr-release|mr-labels|mr-note|mr-checks|mr-merge|mr-poll)
     [ "$#" -ge 2 ] || fail "invalid $command request" 2
     cmd="cmd_${command//-/_}"
     "$cmd" "$@"
