@@ -304,7 +304,7 @@ require_title() {
 }
 
 load_body_file() {
-  local repo=$1 file=$2 purpose=$3 repo_real file_dir file_real bytes
+  local repo=$1 file=$2 purpose=$3 max_bytes=${4:-1000000} repo_real file_dir file_real bytes
   [ -n "$file" ] || usage "$purpose file is required"
   [ -f "$file" ] && [ ! -L "$file" ] || usage "$purpose file must be a regular non-symlink file"
   repo_real=$(cd "$repo" && pwd -P) || usage "repository path unavailable"
@@ -319,7 +319,7 @@ load_body_file() {
   case "$bytes" in
     ''|*[!0-9]*) usage "$purpose file size unavailable" ;;
   esac
-  [ "$bytes" -le 1000000 ] || usage "$purpose file exceeds GitLab's 1,000,000-byte limit"
+  [ "$bytes" -le "$max_bytes" ] || usage "$purpose file exceeds the $max_bytes-byte limit"
   FM_GITLAB_BODY_JSON=$(jq -eRs 'select(index("\u0000") | not)' < "$file_real") \
     || usage "$purpose file contains a NUL byte"
   [ -n "$FM_GITLAB_BODY_JSON" ] || usage "$purpose file contains invalid text"
@@ -541,8 +541,8 @@ mr_author_is_self() {
 }
 
 mr_create_state_valid() {
-  local raw=$1 head=$2 title=$3 description=$4 draft=$5 remove_source=$6
-  jq -e --arg head "$head" --arg title "$title" --arg description "$description" \
+  local raw=$1 head=$2 title=$3 description_json=$4 draft=$5 remove_source=$6
+  jq -e --arg head "$head" --arg title "$title" --argjson description "$description_json" \
     --argjson draft "$draft" --argjson remove_source "$remove_source" '
       .state == "opened"
       and .sha == $head
@@ -1110,8 +1110,8 @@ cmd_mr_find() {
 }
 
 cmd_mr_create() {
-  local repo=$1 title='' source='' target='' body_file='' body='' draft=false remove_source=false
-  local pid encoded encoded_target existing raw verified repo_real body_dir body_real count iid checked_out
+  local repo=$1 title='' source='' target='' body_file='' body_json='""' draft=false remove_source=false
+  local pid encoded encoded_target existing raw verified payload count iid checked_out
   local expected_title head
   shift
   while [ "$#" -gt 0 ]; do
@@ -1157,18 +1157,8 @@ cmd_mr_create() {
   head=$(git -C "$repo" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
     || fail "checked-out source head is unavailable"
   if [ -n "$body_file" ]; then
-    [ -f "$body_file" ] && [ ! -L "$body_file" ] || fail "body file must be a regular non-symlink file" 2
-    repo_real=$(cd "$repo" && pwd -P) || fail "repository path is unavailable" 2
-    body_dir=$(cd "$(dirname "$body_file")" && pwd -P) \
-      || fail "body file parent is unavailable" 2
-    body_real="$body_dir/$(basename "$body_file")"
-    case "$body_real" in
-      "$repo_real"/*) ;;
-      *) fail "body file must stay inside the repository worktree" 2 ;;
-    esac
-    [ "$(wc -c < "$body_real" | tr -d '[:space:]')" -le 65535 ] \
-      || fail "body file is too large" 2
-    body=$(<"$body_real")
+    load_body_file "$repo" "$body_file" "merge-request body" 65535
+    body_json=$FM_GITLAB_BODY_JSON
   fi
 
   require_gitlab_repo "$repo"
@@ -1195,16 +1185,18 @@ cmd_mr_create() {
       || fail "merge-request identity does not match the trusted repository and branches"
     mr_author_is_self "$raw" \
       || fail "matching merge-request author is not authenticated user $FM_GITLAB_USERNAME"
-    mr_create_state_valid "$raw" "$head" "$expected_title" "$body" "$draft" "$remove_source" \
+    mr_create_state_valid "$raw" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
       || fail "matching merge request does not match requested head and metadata"
     emit_mr "$raw" true
     return 0
   fi
 
-  args=(--method POST --raw-field "source_branch=$source" --raw-field "target_branch=$target" --raw-field "title=$expected_title")
-  [ -z "$body" ] || args+=(--raw-field "description=$body")
-  [ "$remove_source" = false ] || args+=(--field remove_source_branch=true)
-  raw=$(gitlab_api "projects/$pid/merge_requests" "${args[@]}")
+  payload=$(jq -cn --arg source "$source" --arg target "$target" --arg title "$expected_title" \
+    --argjson description "$body_json" --argjson remove_source "$remove_source" '
+      {source_branch:$source,target_branch:$target,title:$title,description:$description,
+       remove_source_branch:$remove_source}')
+  raw=$(printf '%s' "$payload" \
+    | gitlab_api "projects/$pid/merge_requests" --method POST --input -)
   iid=$(mr_iid_from_json <<< "$raw") \
     || fail "created merge-request identity is unavailable"
   mr_identity_valid "$raw" "$iid" "$source" "$target" \
@@ -1213,7 +1205,7 @@ cmd_mr_create() {
     || fail "created merge-request identity could not be read back"
   mr_author_is_self "$verified" \
     || fail "created merge-request author is not authenticated user $FM_GITLAB_USERNAME"
-  mr_create_state_valid "$verified" "$head" "$expected_title" "$body" "$draft" "$remove_source" \
+  mr_create_state_valid "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
     || fail "created merge-request head and metadata verification mismatch"
   emit_mr "$verified"
 }
