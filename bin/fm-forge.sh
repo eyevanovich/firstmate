@@ -404,6 +404,25 @@ workflow_label() {
   esac
 }
 
+workflow_transition() {
+  local operation=$1 status=$2 add_label
+  case "$operation:$status" in
+    status:in-progress|status:blocked|status:deferred|release:blocked|release:deferred|release:ready) ;;
+    status:*) usage "invalid workflow status" ;;
+    release:*) usage "invalid workflow release status" ;;
+    *) fail "invalid workflow operation" ;;
+  esac
+  case "$status" in
+    in-progress) add_label=status::in-progress ;;
+    blocked) add_label=status::blocked ;;
+    deferred) add_label=status::deferred ;;
+    ready) add_label=ready-for-agent ;;
+  esac
+  jq -cn --arg add "$add_label" \
+    --argjson all "$(labels_json status::in-progress status::blocked status::deferred ready-for-agent)" \
+    '{add:$add,remove:($all - [$add])}'
+}
+
 require_no_workflow_labels() {
   local label
   for label in "$@"; do
@@ -853,23 +872,25 @@ cmd_issue_create() {
 }
 
 cmd_issue_claim() {
-  local repo=$1 target=$2 raw expected add_json remove_json payload verified
+  local repo=$1 target=$2 raw transition add_label add_json remove_json expected payload verified
   prepare_issue_mutation "$repo" "$target"
   raw=$FM_GITLAB_ISSUE_RAW
   jq -e '.state == "opened"' <<< "$raw" >/dev/null || fail "only an open issue can be claimed"
   require_claimable_owner "$raw"
-  validate_active_labels status::in-progress
-  add_json=$(labels_json status::in-progress)
-  remove_json=$(labels_json status::blocked status::deferred ready-for-agent)
+  transition=$(workflow_transition status in-progress)
+  add_label=$(jq -r '.add' <<< "$transition")
+  add_json=$(jq -c '[.add]' <<< "$transition")
+  remove_json=$(jq -c '.remove' <<< "$transition")
+  validate_active_labels "$add_label"
   expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
     || fail "issue labels are malformed"
   if owner_is_self "$raw" && labels_match "$raw" "$expected"; then
     emit_issue "$raw"
     return 0
   fi
-  payload=$(jq -cn --argjson user_id "$FM_GITLAB_USER_ID" \
-    '{assignee_ids:[$user_id],add_labels:"status::in-progress",
-      remove_labels:"status::blocked,status::deferred,ready-for-agent"}')
+  payload=$(jq -cn --argjson user_id "$FM_GITLAB_USER_ID" --arg add "$add_label" \
+    --arg remove "$(jq -r 'join(",")' <<< "$remove_json")" \
+    '{assignee_ids:[$user_id],add_labels:$add,remove_labels:$remove}')
   issue_update "$FM_FORGE_ISSUE_IID" "$payload" || fail "issue claim failed"
   verified=$(checked_issue_raw "$FM_FORGE_ISSUE_IID") || fail "claimed issue read-back failed"
   owner_is_self "$verified" || fail "issue claim ownership verification mismatch"
@@ -878,23 +899,19 @@ cmd_issue_claim() {
 }
 
 cmd_issue_status() {
-  local repo=$1 target=$2 status='' raw expected add_json remove_json add_label payload verified
+  local repo=$1 target=$2 status='' raw transition expected add_json remove_json add_label payload verified
   shift 2
   [ "$#" -eq 2 ] && [ "$1" = --status ] || usage "issue-status requires --status"
   status=$2
-  case "$status" in in-progress|blocked|deferred) ;; *) usage "invalid issue status" ;; esac
+  transition=$(workflow_transition status "$status")
   prepare_issue_mutation "$repo" "$target"
   raw=$FM_GITLAB_ISSUE_RAW
   jq -e '.state == "opened"' <<< "$raw" >/dev/null || fail "only an open issue can change status"
   require_self_owner "$raw"
-  add_label="status::$status"
+  add_label=$(jq -r '.add' <<< "$transition")
+  add_json=$(jq -c '[.add]' <<< "$transition")
+  remove_json=$(jq -c '.remove' <<< "$transition")
   validate_active_labels "$add_label"
-  case "$status" in
-    in-progress) remove_json=$(labels_json status::blocked status::deferred ready-for-agent) ;;
-    blocked) remove_json=$(labels_json status::in-progress status::deferred ready-for-agent) ;;
-    deferred) remove_json=$(labels_json status::in-progress status::blocked ready-for-agent) ;;
-  esac
-  add_json=$(labels_json "$add_label")
   expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
     || fail "issue labels are malformed"
   if labels_match "$raw" "$expected"; then
@@ -992,29 +1009,17 @@ cmd_issue_state() {
 }
 
 cmd_issue_release() {
-  local repo=$1 target=$2 status='' raw add_json remove_json expected payload verified add_label
+  local repo=$1 target=$2 status='' raw transition add_json remove_json expected payload verified add_label
   shift 2
   [ "$#" -eq 2 ] && [ "$1" = --status ] || usage "issue-release requires --status"
   status=$2
-  case "$status" in blocked|deferred|ready) ;; *) usage "invalid release status" ;; esac
+  transition=$(workflow_transition release "$status")
   prepare_issue_mutation "$repo" "$target"
   raw=$FM_GITLAB_ISSUE_RAW
-  case "$status" in
-    blocked)
-      add_label=status::blocked
-      remove_json=$(labels_json status::in-progress status::deferred ready-for-agent)
-      ;;
-    deferred)
-      add_label=status::deferred
-      remove_json=$(labels_json status::in-progress status::blocked ready-for-agent)
-      ;;
-    ready)
-      add_label=ready-for-agent
-      remove_json=$(labels_json status::in-progress status::blocked status::deferred)
-      ;;
-  esac
+  add_label=$(jq -r '.add' <<< "$transition")
+  add_json=$(jq -c '[.add]' <<< "$transition")
+  remove_json=$(jq -c '.remove' <<< "$transition")
   validate_active_labels "$add_label"
-  add_json=$(labels_json "$add_label")
   expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
     || fail "issue labels are malformed"
   if owner_is_none "$raw"; then
@@ -1183,7 +1188,7 @@ cmd_mr_create() {
 }
 
 cmd_mr_claim() {
-  local repo=$1 target=$2 expected_target='' raw sha add_json remove_json expected payload verified
+  local repo=$1 target=$2 expected_target='' raw sha transition add_label add_json remove_json expected payload verified
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1197,9 +1202,11 @@ cmd_mr_claim() {
   raw=$FM_GITLAB_MR_RAW
   jq -e '.state == "opened"' <<< "$raw" >/dev/null || fail "only an open merge request can be claimed"
   require_claimable_owner "$raw" "merge request"
-  validate_active_labels status::in-progress
-  add_json=$(labels_json status::in-progress)
-  remove_json=$(labels_json status::blocked status::deferred ready-for-agent)
+  transition=$(workflow_transition status in-progress)
+  add_label=$(jq -r '.add' <<< "$transition")
+  add_json=$(jq -c '[.add]' <<< "$transition")
+  remove_json=$(jq -c '.remove' <<< "$transition")
+  validate_active_labels "$add_label"
   expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
     || fail "merge-request labels are malformed"
   if owner_is_self "$raw" && labels_match "$raw" "$expected"; then
@@ -1207,9 +1214,9 @@ cmd_mr_claim() {
     return 0
   fi
   sha=$(jq -r '.sha' <<< "$raw")
-  payload=$(jq -cn --argjson user_id "$FM_GITLAB_USER_ID" \
-    '{assignee_ids:[$user_id],add_labels:"status::in-progress",
-      remove_labels:"status::blocked,status::deferred,ready-for-agent"}')
+  payload=$(jq -cn --argjson user_id "$FM_GITLAB_USER_ID" --arg add "$add_label" \
+    --arg remove "$(jq -r 'join(",")' <<< "$remove_json")" \
+    '{assignee_ids:[$user_id],add_labels:$add,remove_labels:$remove}')
   mr_update "$FM_FORGE_MR_IID" "$payload" || fail "merge-request claim failed"
   verified=$(refresh_mr_after_mutation "$FM_FORGE_MR_IID" "$sha") \
     || fail "merge-request claim read-back failed"
@@ -1219,7 +1226,7 @@ cmd_mr_claim() {
 }
 
 cmd_mr_status() {
-  local repo=$1 target=$2 expected_target='' status='' raw sha add_label add_json remove_json expected payload verified
+  local repo=$1 target=$2 expected_target='' status='' raw sha transition add_label add_json remove_json expected payload verified
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1232,20 +1239,16 @@ cmd_mr_status() {
       *) usage "unknown mr-status argument: $1" ;;
     esac
   done
-  case "$status" in in-progress|blocked|deferred) ;; *) usage "invalid merge-request status" ;; esac
+  transition=$(workflow_transition status "$status")
   prepare_mr_mutation "$repo" "$target" "$expected_target"
   raw=$FM_GITLAB_MR_RAW
   jq -e '.state == "opened"' <<< "$raw" >/dev/null \
     || fail "only an open merge request can change status"
   require_self_owner "$raw" "merge request"
-  add_label="status::$status"
+  add_label=$(jq -r '.add' <<< "$transition")
+  add_json=$(jq -c '[.add]' <<< "$transition")
+  remove_json=$(jq -c '.remove' <<< "$transition")
   validate_active_labels "$add_label"
-  case "$status" in
-    in-progress) remove_json=$(labels_json status::blocked status::deferred ready-for-agent) ;;
-    blocked) remove_json=$(labels_json status::in-progress status::deferred ready-for-agent) ;;
-    deferred) remove_json=$(labels_json status::in-progress status::blocked ready-for-agent) ;;
-  esac
-  add_json=$(labels_json "$add_label")
   expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
     || fail "merge-request labels are malformed"
   if labels_match "$raw" "$expected"; then
@@ -1264,7 +1267,7 @@ cmd_mr_status() {
 }
 
 cmd_mr_release() {
-  local repo=$1 target=$2 expected_target='' status='' raw sha add_label add_json remove_json expected payload verified
+  local repo=$1 target=$2 expected_target='' status='' raw sha transition add_label add_json remove_json expected payload verified
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1277,25 +1280,13 @@ cmd_mr_release() {
       *) usage "unknown mr-release argument: $1" ;;
     esac
   done
-  case "$status" in blocked|deferred|ready) ;; *) usage "invalid merge-request release status" ;; esac
+  transition=$(workflow_transition release "$status")
   prepare_mr_mutation "$repo" "$target" "$expected_target"
   raw=$FM_GITLAB_MR_RAW
-  case "$status" in
-    blocked)
-      add_label=status::blocked
-      remove_json=$(labels_json status::in-progress status::deferred ready-for-agent)
-      ;;
-    deferred)
-      add_label=status::deferred
-      remove_json=$(labels_json status::in-progress status::blocked ready-for-agent)
-      ;;
-    ready)
-      add_label=ready-for-agent
-      remove_json=$(labels_json status::in-progress status::blocked status::deferred)
-      ;;
-  esac
+  add_label=$(jq -r '.add' <<< "$transition")
+  add_json=$(jq -c '[.add]' <<< "$transition")
+  remove_json=$(jq -c '.remove' <<< "$transition")
   validate_active_labels "$add_label"
-  add_json=$(labels_json "$add_label")
   expected=$(expected_labels "$raw" "$add_json" "$remove_json") \
     || fail "merge-request labels are malformed"
   if owner_is_none "$raw"; then
