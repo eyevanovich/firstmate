@@ -5,7 +5,9 @@
 # This adapter owns the GitLab surface Firstmate needs without exposing raw API,
 # project deletion, secret mutation, or repository-content writes to callers.
 # The clone's origin remote is the only authority for host and project identity.
-# Issues must match that project's numeric identity and canonical URL.
+# Issues must match that project's numeric identity and an exact trusted URL.
+# Issue URL inputs accept GitLab's /-/work_items/<iid> canonical form and the
+# compatible /-/issues/<iid> form for the origin host and project only.
 # Ownership-changing issue operations act only on unassigned or self-owned work;
 # every later issue mutation requires exact self-ownership and verifies read-back.
 # Workflow status labels are changed only by claim, status, and release commands.
@@ -27,18 +29,18 @@
 #   fm-forge.sh repo <repo>
 #   fm-forge.sh auth <repo>
 #   fm-forge.sh issue-list <repo> [--state opened|closed|all] [--limit 1..100]
-#   fm-forge.sh issue-view <repo> <iid|canonical-url>
+#   fm-forge.sh issue-view <repo> <iid|issue-url>
 #   fm-forge.sh issue-create <repo> --title <text> [--body-file <file>]
 #     [--label <existing-label>]... [--claim]
-#   fm-forge.sh issue-claim <repo> <iid|canonical-url>
-#   fm-forge.sh issue-status <repo> <iid|canonical-url>
+#   fm-forge.sh issue-claim <repo> <iid|issue-url>
+#   fm-forge.sh issue-status <repo> <iid|issue-url>
 #     --status in-progress|blocked|deferred
-#   fm-forge.sh issue-labels <repo> <iid|canonical-url>
+#   fm-forge.sh issue-labels <repo> <iid|issue-url>
 #     (--add <existing-label>|--remove <existing-label>)...
-#   fm-forge.sh issue-note <repo> <iid|canonical-url> --body-file <file>
-#   fm-forge.sh issue-close <repo> <iid|canonical-url>
-#   fm-forge.sh issue-reopen <repo> <iid|canonical-url>
-#   fm-forge.sh issue-release <repo> <iid|canonical-url>
+#   fm-forge.sh issue-note <repo> <iid|issue-url> --body-file <file>
+#   fm-forge.sh issue-close <repo> <iid|issue-url>
+#   fm-forge.sh issue-reopen <repo> <iid|issue-url>
+#   fm-forge.sh issue-release <repo> <iid|issue-url>
 #     --status blocked|deferred|ready
 #   fm-forge.sh mr-create <repo> --title <text> --source <branch>
 #     [--target <branch>] [--body-file <file>] [--draft]
