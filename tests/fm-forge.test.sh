@@ -325,6 +325,33 @@ test_mr_url_must_match_origin() {
   pass "merge-request URLs cannot override the origin host or project"
 }
 
+test_canonical_resource_urls_share_strict_validation() {
+  local command url out rc
+  reset_case
+  run_adapter issue-view "$REPO" \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7' >/dev/null \
+    || fail "canonical issue URL should resolve"
+  run_adapter mr-view "$REPO" \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5' >/dev/null \
+    || fail "canonical merge-request URL should resolve"
+
+  while IFS='|' read -r command url; do
+    reset_case
+    out=$(run_adapter "$command" "$REPO" "$url" 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "$command malformed canonical URL"
+    [ ! -s "$LOG" ] || fail "$command malformed canonical URL reached credentials"
+  done <<'CASES'
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/07
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7?x=1
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/7
+mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/05
+mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5#fragment
+mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/5
+CASES
+  pass "issue and merge-request URLs share strict canonical validation"
+}
+
 test_mr_body_file_cannot_read_outside_worktree() {
   local outside out rc before
   reset_case
@@ -754,6 +781,7 @@ test_registered_self_hosted_gitlab_is_explicit
 test_unsupported_and_ambiguous_hosts_never_reach_credentials
 test_issue_output_is_minimal_and_bounded
 test_mr_url_must_match_origin
+test_canonical_resource_urls_share_strict_validation
 test_mr_body_file_cannot_read_outside_worktree
 test_mr_find_requires_one_exact_project_and_branch_match
 test_mr_create_reuses_only_one_exact_match

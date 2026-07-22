@@ -303,6 +303,13 @@ require_title() {
   esac
 }
 
+cleanup_body_snapshot() {
+  [ -z "${FM_FORGE_BODY_SNAPSHOT_DIR:-}" ] || {
+    rm -f -- "$FM_FORGE_BODY_SNAPSHOT_DIR/body"
+    rmdir "$FM_FORGE_BODY_SNAPSHOT_DIR" 2>/dev/null || true
+  }
+}
+
 capture_body_file_json() {
   local repo=$1 file=$2 purpose=$3 max_bytes=${4:-1000000} repo_real file_dir file_real snapshot bytes
   local body_json
@@ -316,13 +323,15 @@ capture_body_file_json() {
     "$repo_real"/*) ;;
     *) usage "$purpose file must stay inside the repository worktree" ;;
   esac
-  snapshot=$(mktemp "$repo_real/.fm-forge-body.XXXXXX") \
-    || usage "$purpose snapshot could not be created"
-  FM_FORGE_BODY_SNAPSHOT=$snapshot
-  trap 'rm -f -- "$FM_FORGE_BODY_SNAPSHOT"' EXIT
+  FM_FORGE_BODY_SNAPSHOT_DIR="$repo_real/.fm-forge-body.$$.${RANDOM}${RANDOM}"
+  trap cleanup_body_snapshot EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  (umask 077 && mkdir "$FM_FORGE_BODY_SNAPSHOT_DIR") \
+    || usage "$purpose snapshot could not be created"
+  snapshot="$FM_FORGE_BODY_SNAPSHOT_DIR/body"
+  : > "$snapshot" || usage "$purpose snapshot could not be created"
   exec 9< "$file_real" || {
     rm -f -- "$snapshot"
     usage "$purpose file could not be opened"
@@ -362,6 +371,8 @@ capture_body_file_json() {
     usage "$purpose file contains a NUL byte"
   }
   rm -f -- "$snapshot"
+  rmdir "$FM_FORGE_BODY_SNAPSHOT_DIR" 2>/dev/null \
+    || usage "$purpose snapshot directory could not be removed"
   trap - EXIT HUP INT TERM
   [ -n "$body_json" ] || usage "$purpose file contains invalid text"
   printf '%s\n' "$body_json"

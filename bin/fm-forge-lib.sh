@@ -185,12 +185,14 @@ fm_forge_gitlab_api() {
   fm_forge_gitlab_glab "$host" api "$endpoint" --hostname "$host" "$@"
 }
 
-fm_forge_gitlab_issue_url_parse_parts() {
-  local raw=${1-} rest host path project iid marker='/-/issues/'
-  FM_FORGE_ISSUE_IID=
-  FM_FORGE_ISSUE_URL=
+fm_forge_gitlab_resource_url_parse_parts() {
+  local raw=${1-} resource=${2-} rest host path project iid marker
+  FM_FORGE_RESOURCE_IID=
+  FM_FORGE_RESOURCE_URL=
   FM_FORGE_URL_HOST=
   FM_FORGE_URL_PROJECT=
+  case "$resource" in issues|merge_requests) ;; *) return 1 ;; esac
+  marker="/-/$resource/"
   case "$raw" in
     https://*) ;;
     *) return 1 ;;
@@ -211,11 +213,20 @@ fm_forge_gitlab_issue_url_parse_parts() {
     ''|0|0[0-9]*|*[!0-9]*) return 1 ;;
   esac
   host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
-  FM_FORGE_ISSUE_IID=$iid
+  FM_FORGE_RESOURCE_IID=$iid
   FM_FORGE_URL_HOST=$host
   FM_FORGE_URL_PROJECT=$project
-  FM_FORGE_ISSUE_URL="https://$host/$project/-/issues/$iid"
-  [ "$raw" = "$FM_FORGE_ISSUE_URL" ]
+  FM_FORGE_RESOURCE_URL="https://$host/$project/-/$resource/$iid"
+  [ "$raw" = "$FM_FORGE_RESOURCE_URL" ]
+}
+
+fm_forge_gitlab_issue_url_parse_parts() {
+  local raw=${1-}
+  FM_FORGE_ISSUE_IID=
+  FM_FORGE_ISSUE_URL=
+  fm_forge_gitlab_resource_url_parse_parts "$raw" issues || return 1
+  FM_FORGE_ISSUE_IID=$FM_FORGE_RESOURCE_IID
+  FM_FORGE_ISSUE_URL=$FM_FORGE_RESOURCE_URL
 }
 
 fm_forge_gitlab_issue_url_parse() {
@@ -228,36 +239,12 @@ fm_forge_gitlab_issue_url_parse() {
 }
 
 fm_forge_gitlab_mr_url_parse_parts() {
-  local raw=${1-} rest host path project iid marker='/-/merge_requests/'
+  local raw=${1-}
   FM_FORGE_MR_IID=
   FM_FORGE_MR_URL=
-  FM_FORGE_URL_HOST=
-  FM_FORGE_URL_PROJECT=
-  case "$raw" in
-    https://*) ;;
-    *) return 1 ;;
-  esac
-  rest=${raw#https://}
-  host=${rest%%/*}
-  [ "$host" != "$rest" ] || return 1
-  path=${rest#*/}
-  case "$path" in
-    *"$marker"*) ;;
-    *) return 1 ;;
-  esac
-  project=${path%%"$marker"*}
-  iid=${path#*"$marker"}
-  fm_forge_host_valid "$host" || return 1
-  fm_forge_project_valid "$project" || return 1
-  case "$iid" in
-    ''|0|0[0-9]*|*[!0-9]*) return 1 ;;
-  esac
-  host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
-  FM_FORGE_MR_IID=$iid
-  FM_FORGE_URL_HOST=$host
-  FM_FORGE_URL_PROJECT=$project
-  FM_FORGE_MR_URL="https://$host/$project/-/merge_requests/$iid"
-  [ "$raw" = "$FM_FORGE_MR_URL" ]
+  fm_forge_gitlab_resource_url_parse_parts "$raw" merge_requests || return 1
+  FM_FORGE_MR_IID=$FM_FORGE_RESOURCE_IID
+  FM_FORGE_MR_URL=$FM_FORGE_RESOURCE_URL
 }
 
 fm_forge_gitlab_mr_url_parse() {
