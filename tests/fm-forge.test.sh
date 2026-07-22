@@ -37,6 +37,9 @@ emit_mr_json() {
   local project_id=314 source_project_id=314 target_project_id=314
   local source_branch=fm/fix target_branch=${FM_FAKE_TARGET_BRANCH:-main} merge_sha=null pipeline pipeline_sha head_pipeline
   local author_id=42 author_username=mate
+  local title=${FM_FAKE_MR_TITLE:-Ship fix} description=${FM_FAKE_MR_DESCRIPTION:-}
+  local draft=${FM_FAKE_MR_DRAFT:-false} remove_source=${FM_FAKE_MR_REMOVE_SOURCE:-false}
+  local head_sha=${FM_FAKE_MR_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
   case "$identity" in
     exact) ;;
     fork) source_project_id=2718 ;;
@@ -60,9 +63,20 @@ emit_mr_json() {
     head_pipeline=$(printf '{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}' \
       "$pipeline" "$pipeline_sha")
   fi
-  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"labels":["backend"],"author":{"id":%s,"username":"%s"},"assignees":[],"head_pipeline":%s}' \
-    "$iid" "$project_id" "$source_project_id" "$target_project_id" "$state" "$iid" \
-    "$source_branch" "$target_branch" "$merge_sha" "$author_id" "$author_username" "$head_pipeline"
+  jq -cn --argjson iid "$iid" --argjson project_id "$project_id" \
+    --argjson source_project_id "$source_project_id" --argjson target_project_id "$target_project_id" \
+    --arg title "$title" --arg state "$state" --arg source "$source_branch" --arg target "$target_branch" \
+    --arg sha "$head_sha" --argjson merge_sha "$merge_sha" --arg description "$description" \
+    --argjson draft "$draft" --argjson remove_source "$remove_source" --argjson author_id "$author_id" \
+    --arg author_username "$author_username" --argjson head_pipeline "$head_pipeline" '
+      {iid:$iid,project_id:$project_id,source_project_id:$source_project_id,
+       target_project_id:$target_project_id,title:$title,state:$state,
+       web_url:("https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/" + ($iid|tostring)),
+       source_branch:$source,target_branch:$target,draft:$draft,
+       force_remove_source_branch:$remove_source,description:$description,
+       merge_status:"can_be_merged",detailed_merge_status:"mergeable",sha:$sha,
+       merge_commit_sha:$merge_sha,labels:["backend"],
+       author:{id:$author_id,username:$author_username},assignees:[],head_pipeline:$head_pipeline}'
 }
 
 case "${1:-} ${2:-}" in
@@ -164,11 +178,16 @@ chmod +x "$FAKEBIN/gh"
 
 run_adapter() {
   local -a args=("$@")
+  local fake_mr_sha=${FM_FAKE_MR_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+  if [ "${1:-}" = mr-create ] && [ -z "${FM_FAKE_MR_SHA:-}" ]; then
+    fake_mr_sha=$(git -C "$REPO" rev-parse HEAD)
+  fi
   if [ "${1:-}" = mr-merge ] && [ "${FM_TEST_NO_DEFAULT_SHA:-0}" != 1 ]; then
     args+=(--sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
   fi
   PATH="$FAKEBIN:$PATH" FM_FAKE_GLAB_LOG="$LOG" FM_FAKE_GH_LOG="$GH_LOG" \
     FM_FAKE_MERGED_MARKER="$MERGED_MARKER" FM_FORGE_HOSTS_FILE="${FM_FORGE_HOSTS_FILE:-}" \
+    FM_FAKE_MR_SHA="$fake_mr_sha" \
     GITLAB_TOKEN=TEST_AMBIENT_TOKEN GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN \
     OAUTH_TOKEN=TEST_OAUTH_TOKEN GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN \
     "$ADAPTER" "${args[@]}"
@@ -336,6 +355,23 @@ test_mr_create_reuses_only_one_exact_match() {
   assert_no_grep '--method POST' "$LOG" "exact reuse created another merge request"
 
   reset_case
+  out=$(FM_FAKE_MR_TITLE='Conflicting title' run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "conflicting merge-request retry metadata"
+  assert_contains "$out" "does not match requested head and metadata" \
+    "conflicting merge-request retry refusal"
+  assert_no_grep '--method POST' "$LOG" "conflicting retry created another merge request"
+
+  reset_case
+  out=$(FM_FAKE_MR_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "stale merge-request retry head"
+  assert_contains "$out" "does not match requested head and metadata" \
+    "stale merge-request retry refusal"
+
+  reset_case
   out=$(FM_FAKE_MR_AUTHOR=other run_adapter mr-create "$REPO" \
     --title 'Ship fix' --source fm/fix 2>&1)
   rc=$?
@@ -350,6 +386,32 @@ test_mr_create_reuses_only_one_exact_match() {
   [ "$(jq -r '.mr.already' <<< "$out")" = false ] || fail "new merge request reported reuse"
   assert_grep '--method POST --raw-field source_branch=fm/fix --raw-field target_branch=main' \
     "$LOG" "merge-request creation was not branch-bound"
+
+  reset_case
+  printf 'Requested body' > "$REPO/mr-create-body.md"
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_TITLE='Draft: Detailed fix' \
+    FM_FAKE_MR_DESCRIPTION='Requested body' FM_FAKE_MR_DRAFT=true FM_FAKE_MR_REMOVE_SOURCE=true \
+    run_adapter mr-create "$REPO" --title 'Detailed fix' --source fm/fix \
+      --body-file "$REPO/mr-create-body.md" --draft --remove-source-branch) \
+    || fail "requested merge-request metadata should verify after creation"
+  [ "$(jq -r '.mr.already' <<< "$out")" = false ] \
+    || fail "verified new merge request reported reuse"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_TITLE='Wrong read-back title' \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "created merge-request metadata mismatch"
+  assert_contains "$out" "head and metadata verification mismatch" \
+    "created merge-request metadata refusal"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "created merge-request head mismatch"
+  assert_contains "$out" "head and metadata verification mismatch" \
+    "created merge-request head refusal"
 
   reset_case
   out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_AUTHOR=other \

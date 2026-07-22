@@ -540,6 +540,19 @@ mr_author_is_self() {
     ' <<< "$1" >/dev/null 2>&1
 }
 
+mr_create_state_valid() {
+  local raw=$1 head=$2 title=$3 description=$4 draft=$5 remove_source=$6
+  jq -e --arg head "$head" --arg title "$title" --arg description "$description" \
+    --argjson draft "$draft" --argjson remove_source "$remove_source" '
+      .state == "opened"
+      and .sha == $head
+      and .title == $title
+      and (.description // "") == $description
+      and .draft == $draft
+      and .force_remove_source_branch == $remove_source
+    ' <<< "$raw" >/dev/null 2>&1
+}
+
 prepare_mr_mutation() {
   local repo=$1 target=$2 expected_target=$3 iid
   resolve_mr_iid "$repo" "$target"
@@ -1098,7 +1111,8 @@ cmd_mr_find() {
 
 cmd_mr_create() {
   local repo=$1 title='' source='' target='' body_file='' body='' draft=false remove_source=false
-  local pid encoded encoded_target existing raw repo_real body_dir body_real count iid checked_out
+  local pid encoded encoded_target existing raw verified repo_real body_dir body_real count iid checked_out
+  local expected_title head
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1140,6 +1154,8 @@ cmd_mr_create() {
     || fail "checked-out source branch is unavailable"
   [ "$source" = "$checked_out" ] \
     || fail "source branch does not match the checked-out task branch"
+  head=$(git -C "$repo" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
+    || fail "checked-out source head is unavailable"
   if [ -n "$body_file" ]; then
     [ -f "$body_file" ] && [ ! -L "$body_file" ] || fail "body file must be a regular non-symlink file" 2
     repo_real=$(cd "$repo" && pwd -P) || fail "repository path is unavailable" 2
@@ -1162,6 +1178,8 @@ cmd_mr_create() {
   load_current_user || fail "authenticated GitLab user identity is unavailable"
   pid=$(project_id)
   [ -n "$target" ] || target=$FM_GITLAB_DEFAULT_BRANCH
+  expected_title=$title
+  [ "$draft" = false ] || expected_title="Draft: $title"
 
   encoded=$(query_value "$source")
   encoded_target=$(query_value "$target")
@@ -1177,14 +1195,13 @@ cmd_mr_create() {
       || fail "merge-request identity does not match the trusted repository and branches"
     mr_author_is_self "$raw" \
       || fail "matching merge-request author is not authenticated user $FM_GITLAB_USERNAME"
-    [ "$(jq -r '.state // empty' <<< "$raw")" = opened ] \
-      || fail "matching merge request is not open"
+    mr_create_state_valid "$raw" "$head" "$expected_title" "$body" "$draft" "$remove_source" \
+      || fail "matching merge request does not match requested head and metadata"
     emit_mr "$raw" true
     return 0
   fi
 
-  [ "$draft" = false ] || title="Draft: $title"
-  args=(--method POST --raw-field "source_branch=$source" --raw-field "target_branch=$target" --raw-field "title=$title")
+  args=(--method POST --raw-field "source_branch=$source" --raw-field "target_branch=$target" --raw-field "title=$expected_title")
   [ -z "$body" ] || args+=(--raw-field "description=$body")
   [ "$remove_source" = false ] || args+=(--field remove_source_branch=true)
   raw=$(gitlab_api "projects/$pid/merge_requests" "${args[@]}")
@@ -1192,11 +1209,13 @@ cmd_mr_create() {
     || fail "created merge-request identity is unavailable"
   mr_identity_valid "$raw" "$iid" "$source" "$target" \
     || fail "created merge-request identity does not match the trusted repository and branches"
-  mr_author_is_self "$raw" \
+  verified=$(checked_mr_raw "$iid" "$source" "$target") \
+    || fail "created merge-request identity could not be read back"
+  mr_author_is_self "$verified" \
     || fail "created merge-request author is not authenticated user $FM_GITLAB_USERNAME"
-  [ "$(jq -r '.state // empty' <<< "$raw")" = opened ] \
-    || fail "created merge request is not open"
-  emit_mr "$raw"
+  mr_create_state_valid "$verified" "$head" "$expected_title" "$body" "$draft" "$remove_source" \
+    || fail "created merge-request head and metadata verification mismatch"
+  emit_mr "$verified"
 }
 
 cmd_mr_claim() {
