@@ -183,6 +183,10 @@ cat > "$FAKEBIN/iconv" <<'SH'
 if [ -n "${FM_FAKE_REPLACE_BODY:-}" ]; then
   printf 'Replacement body\n' > "$FM_FAKE_REPLACE_BODY"
 fi
+if [ "${FM_FAKE_INTERRUPT_BODY:-0}" = 1 ]; then
+  kill -TERM "$PPID"
+  exit 143
+fi
 exec "$FM_FAKE_REAL_ICONV" "$@"
 SH
 chmod +x "$FAKEBIN/iconv"
@@ -432,6 +436,16 @@ test_mr_create_reuses_only_one_exact_match() {
   expect_code 2 "$rc" "malformed UTF-8 merge-request body"
   assert_contains "$out" "must contain valid UTF-8" "malformed UTF-8 body refusal"
   [ ! -s "$LOG" ] || fail "malformed UTF-8 body reached forge credentials"
+
+  reset_case
+  printf 'Interrupted body\n' > "$REPO/mr-interrupted-body.md"
+  out=$(FM_FAKE_INTERRUPT_BODY=1 run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix --body-file "$REPO/mr-interrupted-body.md" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "interrupted body validation unexpectedly succeeded"
+  if compgen -G "$REPO/.fm-forge-body.*" >/dev/null; then
+    fail "interrupted body validation left a snapshot behind"
+  fi
 
   reset_case
   printf 'Captured body\n\n' > "$REPO/mr-snapshot-body.md"

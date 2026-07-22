@@ -303,8 +303,9 @@ require_title() {
   esac
 }
 
-load_body_file() {
+capture_body_file_json() {
   local repo=$1 file=$2 purpose=$3 max_bytes=${4:-1000000} repo_real file_dir file_real snapshot bytes
+  local body_json
   [ -n "$file" ] || usage "$purpose file is required"
   [ -f "$file" ] && [ ! -L "$file" ] || usage "$purpose file must be a regular non-symlink file"
   repo_real=$(cd "$repo" && pwd -P) || usage "repository path unavailable"
@@ -317,6 +318,11 @@ load_body_file() {
   esac
   snapshot=$(mktemp "$repo_real/.fm-forge-body.XXXXXX") \
     || usage "$purpose snapshot could not be created"
+  FM_FORGE_BODY_SNAPSHOT=$snapshot
+  trap 'rm -f -- "$FM_FORGE_BODY_SNAPSHOT"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   exec 9< "$file_real" || {
     rm -f -- "$snapshot"
     usage "$purpose file could not be opened"
@@ -351,12 +357,18 @@ load_body_file() {
     rm -f -- "$snapshot"
     usage "$purpose file must contain valid UTF-8"
   fi
-  FM_GITLAB_BODY_JSON=$(jq -eRs 'select(index("\u0000") | not)' < "$snapshot") || {
+  body_json=$(jq -eRs 'select(index("\u0000") | not)' < "$snapshot") || {
     rm -f -- "$snapshot"
     usage "$purpose file contains a NUL byte"
   }
   rm -f -- "$snapshot"
-  [ -n "$FM_GITLAB_BODY_JSON" ] || usage "$purpose file contains invalid text"
+  trap - EXIT HUP INT TERM
+  [ -n "$body_json" ] || usage "$purpose file contains invalid text"
+  printf '%s\n' "$body_json"
+}
+
+load_body_file() {
+  FM_GITLAB_BODY_JSON=$(capture_body_file_json "$@") || exit $?
 }
 
 label_arg_valid() {
