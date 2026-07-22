@@ -13,6 +13,7 @@ TMP=$(fm_test_tmproot fm-forge-tests)
 ADAPTER="$ROOT/bin/fm-forge.sh"
 REPO="$TMP/repo"
 FAKEBIN=$(fm_fakebin "$TMP")
+REAL_ICONV=$(command -v iconv)
 LOG="$TMP/glab.log"
 GH_LOG="$TMP/gh.log"
 MERGED_MARKER="$TMP/merged"
@@ -120,6 +121,10 @@ if [ "${1:-}" = api ]; then
       emit_mr_json 5 "${FM_FAKE_CREATED_MR_IDENTITY:-exact}"
       printf '\n'
       ;;
+    projects/kisscut-museum%2Fkisscut-platform/repository/branches/fm%2Ffix)
+      printf '{"name":"fm/fix","commit":{"id":"%s"}}\n' \
+        "${FM_FAKE_REMOTE_BRANCH_SHA:-$FM_FAKE_LOCAL_HEAD}"
+      ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5/pipelines\?*)
       pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
       if [ "${FM_FAKE_PIPELINE_LIST:-current}" = empty ]; then
@@ -173,6 +178,15 @@ exit 1
 SH
 chmod +x "$FAKEBIN/glab"
 
+cat > "$FAKEBIN/iconv" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${FM_FAKE_REPLACE_BODY:-}" ]; then
+  printf 'Replacement body\n' > "$FM_FAKE_REPLACE_BODY"
+fi
+exec "$FM_FAKE_REAL_ICONV" "$@"
+SH
+chmod +x "$FAKEBIN/iconv"
+
 cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_FAKE_GH_LOG"
@@ -183,6 +197,8 @@ chmod +x "$FAKEBIN/gh"
 run_adapter() {
   local -a args=("$@")
   local fake_mr_sha=${FM_FAKE_MR_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+  local fake_local_head
+  fake_local_head=$(git -C "$REPO" rev-parse HEAD)
   if [ "${1:-}" = mr-create ] && [ -z "${FM_FAKE_MR_SHA:-}" ]; then
     fake_mr_sha=$(git -C "$REPO" rev-parse HEAD)
   fi
@@ -191,7 +207,8 @@ run_adapter() {
   fi
   PATH="$FAKEBIN:$PATH" FM_FAKE_GLAB_LOG="$LOG" FM_FAKE_GH_LOG="$GH_LOG" \
     FM_FAKE_MERGED_MARKER="$MERGED_MARKER" FM_FORGE_HOSTS_FILE="${FM_FORGE_HOSTS_FILE:-}" \
-    FM_FAKE_MR_SHA="$fake_mr_sha" \
+    FM_FAKE_MR_SHA="$fake_mr_sha" FM_FAKE_LOCAL_HEAD="$fake_local_head" \
+    FM_FAKE_REAL_ICONV="$REAL_ICONV" \
     GITLAB_TOKEN=TEST_AMBIENT_TOKEN GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN \
     OAUTH_TOKEN=TEST_OAUTH_TOKEN GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN \
     "$ADAPTER" "${args[@]}"
@@ -417,6 +434,16 @@ test_mr_create_reuses_only_one_exact_match() {
   [ ! -s "$LOG" ] || fail "malformed UTF-8 body reached forge credentials"
 
   reset_case
+  printf 'Captured body\n\n' > "$REPO/mr-snapshot-body.md"
+  out=$(FM_FAKE_MR_DESCRIPTION=$'Captured body\n\n' \
+    FM_FAKE_REPLACE_BODY="$REPO/mr-snapshot-body.md" \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix \
+      --body-file "$REPO/mr-snapshot-body.md") \
+    || fail "merge-request retry should use the captured body snapshot"
+  [ "$(jq -r '.mr.already' <<< "$out")" = true ] \
+    || fail "captured body snapshot retry was not reused"
+
+  reset_case
   printf 'Requested body\n\n' > "$REPO/mr-create-body.md"
   out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_TITLE='Draft: Detailed fix' \
     FM_FAKE_MR_DESCRIPTION=$'Requested body\n\n' FM_FAKE_MR_DRAFT=true FM_FAKE_MR_REMOVE_SOURCE=true \
@@ -427,6 +454,15 @@ test_mr_create_reuses_only_one_exact_match() {
     || fail "verified new merge request reported reuse"
   assert_grep '"description":"Requested body\n\n"' "$LOG" \
     "merge-request POST did not preserve trailing body newlines"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none \
+    FM_FAKE_REMOTE_BRANCH_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "stale remote source branch head"
+  assert_contains "$out" "does not match checked-out HEAD" "stale remote head refusal"
+  assert_no_grep '--method POST' "$LOG" "stale remote head still created a merge request"
 
   reset_case
   out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_TITLE='Wrong read-back title' \

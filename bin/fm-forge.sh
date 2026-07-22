@@ -304,7 +304,7 @@ require_title() {
 }
 
 load_body_file() {
-  local repo=$1 file=$2 purpose=$3 max_bytes=${4:-1000000} repo_real file_dir file_real bytes
+  local repo=$1 file=$2 purpose=$3 max_bytes=${4:-1000000} repo_real file_dir file_real snapshot bytes
   [ -n "$file" ] || usage "$purpose file is required"
   [ -f "$file" ] && [ ! -L "$file" ] || usage "$purpose file must be a regular non-symlink file"
   repo_real=$(cd "$repo" && pwd -P) || usage "repository path unavailable"
@@ -315,15 +315,47 @@ load_body_file() {
     "$repo_real"/*) ;;
     *) usage "$purpose file must stay inside the repository worktree" ;;
   esac
-  bytes=$(wc -c < "$file_real" | tr -d '[:space:]')
+  snapshot=$(mktemp "$repo_real/.fm-forge-body.XXXXXX") \
+    || usage "$purpose snapshot could not be created"
+  exec 9< "$file_real" || {
+    rm -f -- "$snapshot"
+    usage "$purpose file could not be opened"
+  }
+  if ! cat <&9 > "$snapshot"; then
+    exec 9<&-
+    rm -f -- "$snapshot"
+    usage "$purpose file could not be captured"
+  fi
+  exec 9<&-
+  if [ -L "$file_real" ] || [ ! -f "$file_real" ] \
+      || ! cmp -s -- "$snapshot" "$file_real"; then
+    rm -f -- "$snapshot"
+    usage "$purpose file changed while it was captured"
+  fi
+  chmod 400 "$snapshot" || {
+    rm -f -- "$snapshot"
+    usage "$purpose snapshot could not be protected"
+  }
+  bytes=$(wc -c < "$snapshot" | tr -d '[:space:]')
   case "$bytes" in
-    ''|*[!0-9]*) usage "$purpose file size unavailable" ;;
+    ''|*[!0-9]*)
+      rm -f -- "$snapshot"
+      usage "$purpose file size unavailable"
+      ;;
   esac
-  [ "$bytes" -le "$max_bytes" ] || usage "$purpose file exceeds the $max_bytes-byte limit"
-  iconv -f UTF-8 -t UTF-8 "$file_real" >/dev/null 2>&1 \
-    || usage "$purpose file must contain valid UTF-8"
-  FM_GITLAB_BODY_JSON=$(jq -eRs 'select(index("\u0000") | not)' < "$file_real") \
-    || usage "$purpose file contains a NUL byte"
+  if [ "$bytes" -gt "$max_bytes" ]; then
+    rm -f -- "$snapshot"
+    usage "$purpose file exceeds the $max_bytes-byte limit"
+  fi
+  if ! iconv -f UTF-8 -t UTF-8 "$snapshot" >/dev/null 2>&1; then
+    rm -f -- "$snapshot"
+    usage "$purpose file must contain valid UTF-8"
+  fi
+  FM_GITLAB_BODY_JSON=$(jq -eRs 'select(index("\u0000") | not)' < "$snapshot") || {
+    rm -f -- "$snapshot"
+    usage "$purpose file contains a NUL byte"
+  }
+  rm -f -- "$snapshot"
   [ -n "$FM_GITLAB_BODY_JSON" ] || usage "$purpose file contains invalid text"
 }
 
@@ -1113,7 +1145,7 @@ cmd_mr_find() {
 
 cmd_mr_create() {
   local repo=$1 title='' source='' target='' body_file='' body_json='""' draft=false remove_source=false
-  local pid encoded encoded_target existing raw verified payload count iid checked_out
+  local pid encoded encoded_target existing raw verified payload branch_raw remote_head count iid checked_out
   local expected_title head
   shift
   while [ "$#" -gt 0 ]; do
@@ -1192,6 +1224,17 @@ cmd_mr_create() {
     emit_mr "$raw" true
     return 0
   fi
+
+  branch_raw=$(gitlab_api "projects/$pid/repository/branches/$encoded") \
+    || fail "trusted source branch head is unavailable"
+  remote_head=$(jq -er --arg source "$source" '
+      select(.name == $source)
+      | .commit.id
+      | strings
+      | select(test("^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"))
+    ' <<< "$branch_raw") || fail "trusted source branch head is malformed"
+  [ "$remote_head" = "$head" ] \
+    || fail "trusted source branch head does not match checked-out HEAD"
 
   payload=$(jq -cn --arg source "$source" --arg target "$target" --arg title "$expected_title" \
     --argjson description "$body_json" --argjson remove_source "$remove_source" '
