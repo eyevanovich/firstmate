@@ -5,7 +5,9 @@
 # This adapter owns the GitLab surface Firstmate needs without exposing raw API,
 # project deletion, secret mutation, or repository-content writes to callers.
 # The clone's origin remote is the only authority for host and project identity.
-# Issues must match that project's numeric identity and canonical URL.
+# Issues must match that project's numeric identity and an exact trusted URL.
+# Issue URL inputs accept GitLab's /-/work_items/<iid> canonical form and the
+# compatible /-/issues/<iid> form for the origin host and project only.
 # Ownership-changing issue operations act only on unassigned or self-owned work;
 # every later issue mutation requires exact self-ownership and verifies read-back.
 # Workflow status labels are changed only by claim, status, and release commands.
@@ -27,18 +29,18 @@
 #   fm-forge.sh repo <repo>
 #   fm-forge.sh auth <repo>
 #   fm-forge.sh issue-list <repo> [--state opened|closed|all] [--limit 1..100]
-#   fm-forge.sh issue-view <repo> <iid|canonical-url>
+#   fm-forge.sh issue-view <repo> <iid|issue-url>
 #   fm-forge.sh issue-create <repo> --title <text> [--body-file <file>]
 #     [--label <existing-label>]... [--claim]
-#   fm-forge.sh issue-claim <repo> <iid|canonical-url>
-#   fm-forge.sh issue-status <repo> <iid|canonical-url>
+#   fm-forge.sh issue-claim <repo> <iid|issue-url>
+#   fm-forge.sh issue-status <repo> <iid|issue-url>
 #     --status in-progress|blocked|deferred
-#   fm-forge.sh issue-labels <repo> <iid|canonical-url>
+#   fm-forge.sh issue-labels <repo> <iid|issue-url>
 #     (--add <existing-label>|--remove <existing-label>)...
-#   fm-forge.sh issue-note <repo> <iid|canonical-url> --body-file <file>
-#   fm-forge.sh issue-close <repo> <iid|canonical-url>
-#   fm-forge.sh issue-reopen <repo> <iid|canonical-url>
-#   fm-forge.sh issue-release <repo> <iid|canonical-url>
+#   fm-forge.sh issue-note <repo> <iid|issue-url> --body-file <file>
+#   fm-forge.sh issue-close <repo> <iid|issue-url>
+#   fm-forge.sh issue-reopen <repo> <iid|issue-url>
+#   fm-forge.sh issue-release <repo> <iid|issue-url>
 #     --status blocked|deferred|ready
 #   fm-forge.sh mr-create <repo> --title <text> --source <branch>
 #     [--target <branch>] [--body-file <file>] [--draft]
@@ -259,13 +261,14 @@ resolve_issue_iid() {
 }
 
 issue_identity_valid() {
-  local raw=$1 iid=$2 expected_url
-  expected_url="https://$FM_FORGE_HOST/$FM_FORGE_PROJECT/-/issues/$iid"
+  local raw=$1 iid=$2 issues_url work_items_url
+  issues_url="https://$FM_FORGE_HOST/$FM_FORGE_PROJECT/-/issues/$iid"
+  work_items_url="https://$FM_FORGE_HOST/$FM_FORGE_PROJECT/-/work_items/$iid"
   jq -e --argjson iid "$iid" --argjson project_id "$FM_GITLAB_PROJECT_ID" \
-    --arg url "$expected_url" '
+    --arg issues_url "$issues_url" --arg work_items_url "$work_items_url" '
       .iid == $iid
       and .project_id == $project_id
-      and .web_url == $url
+      and (.web_url == $issues_url or .web_url == $work_items_url)
       and (.state == "opened" or .state == "closed")
       and (.labels | type) == "array"
       and all(.labels[]; type == "string")
