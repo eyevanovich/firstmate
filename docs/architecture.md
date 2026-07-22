@@ -172,7 +172,7 @@ For target project repos shipped through their own no-mistakes pipeline, commits
 The firstmate repo itself is the exception: its `.no-mistakes/` directory is local state, stays gitignored, and is rejected by CI if tracked.
 Review-based task merges go through `bin/fm-pr-merge.sh`, which records `pr=` and the reviewed `pr_head=` through `bin/fm-pr-check.sh` before invoking the forge adapter.
 GitHub retains `gh-axi` and the canonical byte-static PR poll.
-GitLab routes through `bin/fm-forge.sh`, whose small interface derives host and project only from the clone origin, removes ambient token variables in favor of the host credential stored by `glab auth login`, emits compact JSON, aggregates pipeline checks, pins merges to the reviewed head SHA, and uses a hash-registered merge poll.
+GitLab routes through `bin/fm-forge.sh`, whose guarded interface derives host and project only from the clone origin, owns issue and merge-request metadata and lifecycle mutations, aggregates pipeline checks, pins merges to the reviewed head SHA, and uses a hash-registered merge poll; [configuration.md](configuration.md#toolchain) owns its trust and mutation contract.
 Both paths default to squash, preserve supported explicit merge-method flags, reject repository overrides or origin-mismatched URLs before recording review state, and keep merge authority outside the adapter.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
