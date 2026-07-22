@@ -1159,6 +1159,7 @@ cmd_mr_create() {
   require_gitlab_auth
   load_trusted_project || fail "trusted GitLab project identity is unavailable"
   require_writable_project
+  load_current_user || fail "authenticated GitLab user identity is unavailable"
   pid=$(project_id)
   [ -n "$target" ] || target=$FM_GITLAB_DEFAULT_BRANCH
 
@@ -1174,6 +1175,8 @@ cmd_mr_create() {
       || fail "merge-request identity is unavailable"
     mr_identity_valid "$raw" "$iid" "$source" "$target" \
       || fail "merge-request identity does not match the trusted repository and branches"
+    mr_author_is_self "$raw" \
+      || fail "matching merge-request author is not authenticated user $FM_GITLAB_USERNAME"
     [ "$(jq -r '.state // empty' <<< "$raw")" = opened ] \
       || fail "matching merge request is not open"
     emit_mr "$raw" true
@@ -1189,6 +1192,8 @@ cmd_mr_create() {
     || fail "created merge-request identity is unavailable"
   mr_identity_valid "$raw" "$iid" "$source" "$target" \
     || fail "created merge-request identity does not match the trusted repository and branches"
+  mr_author_is_self "$raw" \
+    || fail "created merge-request author is not authenticated user $FM_GITLAB_USERNAME"
   [ "$(jq -r '.state // empty' <<< "$raw")" = opened ] \
     || fail "created merge request is not open"
   emit_mr "$raw"

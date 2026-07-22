@@ -36,6 +36,7 @@ emit_mr_json() {
   local iid=$1 identity=${2:-exact} state=${3:-opened}
   local project_id=314 source_project_id=314 target_project_id=314
   local source_branch=fm/fix target_branch=${FM_FAKE_TARGET_BRANCH:-main} merge_sha=null pipeline pipeline_sha head_pipeline
+  local author_id=42 author_username=mate
   case "$identity" in
     exact) ;;
     fork) source_project_id=2718 ;;
@@ -47,6 +48,10 @@ emit_mr_json() {
   if [ "$state" = merged ]; then
     merge_sha='"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"'
   fi
+  if [ "${FM_FAKE_MR_AUTHOR:-self}" = other ]; then
+    author_id=77
+    author_username=rival
+  fi
   pipeline=${FM_FAKE_PIPELINE_STATUS:-success}
   pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
   if [ "${FM_FAKE_HEAD_PIPELINE:-current}" = none ]; then
@@ -55,9 +60,9 @@ emit_mr_json() {
     head_pipeline=$(printf '{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}' \
       "$pipeline" "$pipeline_sha")
   fi
-  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"labels":["backend"],"author":{"id":42,"username":"mate"},"assignees":[],"head_pipeline":%s}' \
+  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"labels":["backend"],"author":{"id":%s,"username":"%s"},"assignees":[],"head_pipeline":%s}' \
     "$iid" "$project_id" "$source_project_id" "$target_project_id" "$state" "$iid" \
-    "$source_branch" "$target_branch" "$merge_sha" "$head_pipeline"
+    "$source_branch" "$target_branch" "$merge_sha" "$author_id" "$author_username" "$head_pipeline"
 }
 
 case "${1:-} ${2:-}" in
@@ -72,6 +77,9 @@ esac
 if [ "${1:-}" = api ]; then
   endpoint=${2:-}
   case "$endpoint" in
+    user)
+      printf '%s\n' '{"id":42,"username":"mate","state":"active","locked":false}'
+      ;;
     projects/kisscut-museum%2Fkisscut-platform/issues\?*)
       printf '%s\n' '[{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z","description":"not listed"}]'
       ;;
@@ -328,11 +336,28 @@ test_mr_create_reuses_only_one_exact_match() {
   assert_no_grep '--method POST' "$LOG" "exact reuse created another merge request"
 
   reset_case
+  out=$(FM_FAKE_MR_AUTHOR=other run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "foreign-authored merge-request reuse"
+  assert_contains "$out" "author is not authenticated user" \
+    "foreign-authored merge-request reuse refusal"
+  assert_no_grep '--method POST' "$LOG" "foreign-authored candidate created another merge request"
+
+  reset_case
   out=$(FM_FAKE_MR_LIST_SCENARIO=none run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix) \
     || fail "missing merge request should be created"
   [ "$(jq -r '.mr.already' <<< "$out")" = false ] || fail "new merge request reported reuse"
   assert_grep '--method POST --raw-field source_branch=fm/fix --raw-field target_branch=main' \
     "$LOG" "merge-request creation was not branch-bound"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_AUTHOR=other \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "foreign-authored created merge request"
+  assert_contains "$out" "created merge-request author is not authenticated user" \
+    "foreign-authored created merge-request refusal"
 
   reset_case
   out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_CREATED_MR_IDENTITY=fork \
