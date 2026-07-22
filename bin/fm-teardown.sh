@@ -34,6 +34,11 @@
 # device. It refuses and preserves task state when that proof fails; otherwise
 # it removes the task's check, trust record, PR sidecar, publication record, and
 # quarantine entries with the rest of the volatile state.
+# A state/<id>.observer record is delegated to fm-no-mistakes-observer.sh
+# cleanup after landing and worktree safety checks but before any worker or
+# worktree removal. That owner refuses a still-running run and closes only its
+# exact identity-matched observer endpoint; teardown never treats the observer
+# as the worker or kills it with an unscoped terminal command.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -1039,6 +1044,10 @@ cleanup_firstmate_home_children() {
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
       fi
     fi
+    if [ -e "$sub_state/$child_id.observer" ] || [ -L "$sub_state/$child_id.observer" ]; then
+      FM_HOME="$home" FM_STATE_OVERRIDE="$sub_state" \
+        "$SCRIPT_DIR/fm-no-mistakes-observer.sh" cleanup "$child_id" || return 1
+    fi
     if [ -n "$child_t" ]; then
       if [ "$child_backend" = zellij ]; then
         # Zellij titles are scoped by the owning home tag, so forced secondmate
@@ -1156,6 +1165,16 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
       exit 1
     fi
   fi
+fi
+
+# The no-mistakes observer is separate from the worker endpoint. Its owner
+# verifies that the recorded run is terminal and closes only the exact observer
+# before this script removes the worktree or worker endpoint.
+if [ -e "$STATE/$ID.observer" ] || [ -L "$STATE/$ID.observer" ]; then
+  "$SCRIPT_DIR/fm-no-mistakes-observer.sh" cleanup "$ID" || {
+    echo "REFUSED: no-mistakes observer cleanup was not safe; preserving task state." >&2
+    exit 1
+  }
 fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.

@@ -15,6 +15,7 @@ The tracked code root contains the shared instruction, skill, documentation, wor
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the guarded exceptions in `AGENTS.md`.
 
 `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
+`bin/fm-no-mistakes-observer.sh` owns the separate `state/<id>.observer` identity record, its exact fields, and its lifecycle.
 The producing PR and X helpers own the fields they append, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
 Wake, watcher, away-mode, and X-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
 
@@ -409,6 +410,10 @@ FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-crew-state.sh
 FM_CREW_STATE_RUNS_LIMIT=200  # recent no-mistakes runs rows scanned when cross-branch attribution falls back from axi status
+FM_NM_OBSERVER_WAIT_SECS=180  # seconds allowed to discover an authoritative run id after asking a worker to start no-mistakes
+FM_NM_OBSERVER_POLL_SECS=1  # seconds between observer run-id discovery reads
+FM_NM_OBSERVER_SETTLE_SECS=0.2  # seconds before checking whether a newly opened observer exited immediately
+FM_NM_OBSERVER_COMMAND_TIMEOUT=10  # seconds allowed per observer-only status or terminal CLI call before manual-attach fallback
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by working/paused watcher triage
 FMX_PAIRING_TOKEN=      # X mode pairing token; .env opt-in authorizes replies and eligible lifecycle actions
 FMX_RELAY_URL=https://myfirstmate.io   # optional X relay override, mainly for local relay development

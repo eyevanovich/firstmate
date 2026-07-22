@@ -35,6 +35,25 @@ You do not need to attach for routine supervision: from an active firstmate sess
 
 Verify it works by spawning a trivial task with `--backend herdr` and confirming the task's meta records `backend=herdr` plus `herdr_session=`, `herdr_workspace_id=`, `herdr_tab_id=`, and `herdr_pane_id=`; the workspace for your home should show the new `fm-<id>` tab.
 
+### Captain-run no-mistakes observer verification
+
+The observer lifecycle has deterministic fake-CLI coverage for Herdr focus flags, worker/observer separation, bounded failure fallback, detach tombstones, exact identity checks, and exact tab cleanup; live observer-launch verification is deliberately left to the captain after review.
+Use an existing disposable Herdr-backed no-mistakes task and its authoritative run id so this check cannot start or duplicate validation:
+
+```sh
+FM_HOME=<firstmate-home> bin/fm-no-mistakes-observer.sh open <task-id> --run <run-id>
+```
+
+Confirm that one `nm-observer-...` sibling tab appears without changing the focused worker tab, the worker continues owning validation, and `q` exits only the observer TUI.
+Run the same `open` command again and confirm the detached observer does not respawn, then verify the only supported explicit respawn:
+
+```sh
+FM_HOME=<firstmate-home> bin/fm-no-mistakes-observer.sh reopen <task-id> --run <run-id>
+```
+
+After the run is terminal, verify exact cleanup with `FM_HOME=<firstmate-home> bin/fm-no-mistakes-observer.sh cleanup <task-id>` and confirm the observer tab closes while the worker tab remains.
+Any unsupported or timed-out observer operation must leave validation unchanged and print the exact fallback `no-mistakes attach --run <run-id>`.
+
 Limitations: herdr is experimental and still carries the open gaps documented below.
 Resolved backend evidence, including the 2026-07-06 symlinked-project-prefix isolation fix, is kept in the same follow-up log for auditability.
 

@@ -270,7 +270,7 @@ After an autonomous merge, give the captain a one-line full-URL or local-main ou
 
 ### Validate
 
-For a no-mistakes ship, trigger validation on the same worker after its implementation commit, using the harness invocation owned by `harness-adapters`.
+For a no-mistakes ship, run `bin/fm-no-mistakes-observer.sh start <id>` after the worker's implementation commit; its header owns harness invocation, authoritative run-ID discovery, the separate captain-visible observer, safe fallback, and exact observer cleanup.
 The task worker that starts a no-mistakes run drives the pipeline and owns every `no-mistakes axi run` and `no-mistakes axi respond` call through the next gate or outcome.
 Firstmate never invokes `no-mistakes axi respond` for a crew-owned run.
 
