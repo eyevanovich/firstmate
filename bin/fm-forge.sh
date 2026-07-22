@@ -79,6 +79,12 @@ FM_GITLAB_ISSUE_RAW=
 FM_GITLAB_MR_RAW=
 FM_GITLAB_MR_SOURCE=
 FM_GITLAB_MR_TARGET=
+readonly -a FM_FORGE_WORKFLOW_LABELS=(
+  status::in-progress
+  status::blocked
+  status::deferred
+  ready-for-agent
+)
 
 usage() {
   if [ "$#" -gt 0 ]; then
@@ -398,14 +404,15 @@ validate_active_labels() {
 }
 
 workflow_label() {
-  case "$1" in
-    status::in-progress|status::blocked|status::deferred|ready-for-agent) return 0 ;;
-    *) return 1 ;;
-  esac
+  local candidate
+  for candidate in "${FM_FORGE_WORKFLOW_LABELS[@]}"; do
+    [ "$1" != "$candidate" ] || return 0
+  done
+  return 1
 }
 
 workflow_transition() {
-  local operation=$1 status=$2 add_label
+  local operation=$1 status=$2 label_index
   case "$operation:$status" in
     status:in-progress|status:blocked|status:deferred|release:blocked|release:deferred|release:ready) ;;
     status:*) usage "invalid workflow status" ;;
@@ -413,13 +420,13 @@ workflow_transition() {
     *) fail "invalid workflow operation" ;;
   esac
   case "$status" in
-    in-progress) add_label=status::in-progress ;;
-    blocked) add_label=status::blocked ;;
-    deferred) add_label=status::deferred ;;
-    ready) add_label=ready-for-agent ;;
+    in-progress) label_index=0 ;;
+    blocked) label_index=1 ;;
+    deferred) label_index=2 ;;
+    ready) label_index=3 ;;
   esac
-  jq -cn --arg add "$add_label" \
-    --argjson all "$(labels_json status::in-progress status::blocked status::deferred ready-for-agent)" \
+  jq -cn --arg add "${FM_FORGE_WORKFLOW_LABELS[$label_index]}" \
+    --argjson all "$(labels_json "${FM_FORGE_WORKFLOW_LABELS[@]}")" \
     '{add:$add,remove:($all - [$add])}'
 }
 
