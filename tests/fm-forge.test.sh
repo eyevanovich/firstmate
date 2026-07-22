@@ -13,6 +13,7 @@ TMP=$(fm_test_tmproot fm-forge-tests)
 ADAPTER="$ROOT/bin/fm-forge.sh"
 REPO="$TMP/repo"
 FAKEBIN=$(fm_fakebin "$TMP")
+REAL_ICONV=$(command -v iconv)
 LOG="$TMP/glab.log"
 GH_LOG="$TMP/gh.log"
 MERGED_MARKER="$TMP/merged"
@@ -31,11 +32,19 @@ for credential in GITLAB_TOKEN GITLAB_ACCESS_TOKEN OAUTH_TOKEN GLAB_ENABLE_CI_AU
   fi
 done
 printf 'token=%s args=%s\n' "${GITLAB_TOKEN-unset}" "$*" >> "$FM_FAKE_GLAB_LOG"
+if [[ " $* " == *' --input - '* ]]; then
+  input=$(cat)
+  printf 'input=%s\n' "$input" >> "$FM_FAKE_GLAB_LOG"
+fi
 
 emit_mr_json() {
   local iid=$1 identity=${2:-exact} state=${3:-opened}
   local project_id=314 source_project_id=314 target_project_id=314
   local source_branch=fm/fix target_branch=${FM_FAKE_TARGET_BRANCH:-main} merge_sha=null pipeline pipeline_sha head_pipeline
+  local author_id=42 author_username=mate
+  local title=${FM_FAKE_MR_TITLE:-Ship fix} description=${FM_FAKE_MR_DESCRIPTION:-}
+  local draft=${FM_FAKE_MR_DRAFT:-false} remove_source=${FM_FAKE_MR_REMOVE_SOURCE:-false}
+  local head_sha=${FM_FAKE_MR_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
   case "$identity" in
     exact) ;;
     fork) source_project_id=2718 ;;
@@ -47,6 +56,10 @@ emit_mr_json() {
   if [ "$state" = merged ]; then
     merge_sha='"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"'
   fi
+  if [ "${FM_FAKE_MR_AUTHOR:-self}" = other ]; then
+    author_id=77
+    author_username=rival
+  fi
   pipeline=${FM_FAKE_PIPELINE_STATUS:-success}
   pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
   if [ "${FM_FAKE_HEAD_PIPELINE:-current}" = none ]; then
@@ -55,9 +68,20 @@ emit_mr_json() {
     head_pipeline=$(printf '{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}' \
       "$pipeline" "$pipeline_sha")
   fi
-  printf '{"iid":%s,"project_id":%s,"source_project_id":%s,"target_project_id":%s,"title":"Ship fix","state":"%s","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/%s","source_branch":"%s","target_branch":"%s","draft":false,"merge_status":"can_be_merged","detailed_merge_status":"mergeable","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":%s,"head_pipeline":%s}' \
-    "$iid" "$project_id" "$source_project_id" "$target_project_id" "$state" "$iid" \
-    "$source_branch" "$target_branch" "$merge_sha" "$head_pipeline"
+  jq -cn --argjson iid "$iid" --argjson project_id "$project_id" \
+    --argjson source_project_id "$source_project_id" --argjson target_project_id "$target_project_id" \
+    --arg title "$title" --arg state "$state" --arg source "$source_branch" --arg target "$target_branch" \
+    --arg sha "$head_sha" --argjson merge_sha "$merge_sha" --arg description "$description" \
+    --argjson draft "$draft" --argjson remove_source "$remove_source" --argjson author_id "$author_id" \
+    --arg author_username "$author_username" --argjson head_pipeline "$head_pipeline" '
+      {iid:$iid,project_id:$project_id,source_project_id:$source_project_id,
+       target_project_id:$target_project_id,title:$title,state:$state,
+       web_url:("https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/" + ($iid|tostring)),
+       source_branch:$source,target_branch:$target,draft:$draft,
+       force_remove_source_branch:$remove_source,description:$description,
+       merge_status:"can_be_merged",detailed_merge_status:"mergeable",sha:$sha,
+       merge_commit_sha:$merge_sha,labels:["backend"],
+       author:{id:$author_id,username:$author_username},assignees:[],head_pipeline:$head_pipeline}'
 }
 
 case "${1:-} ${2:-}" in
@@ -72,13 +96,16 @@ esac
 if [ "${1:-}" = api ]; then
   endpoint=${2:-}
   case "$endpoint" in
+    user)
+      printf '%s\n' '{"id":42,"username":"mate","state":"active","locked":false}'
+      ;;
     projects/kisscut-museum%2Fkisscut-platform/issues\?*)
-      printf '%s\n' '[{"iid":7,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","labels":["bug"],"updated_at":"2026-07-18T00:00:00Z","description":"not listed"}]'
+      printf '%s\n' '[{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z","description":"not listed"}]'
       ;;
     projects/kisscut-museum%2Fkisscut-platform/issues/7)
       long=$(printf 'x%.0s' {1..4100})
       printf '[{"bad":true}]' >/dev/null
-      printf '{"iid":7,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","description":"%s","labels":["bug"],"author":{"username":"ivan"},"assignees":[{"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z"}\n' "$long"
+      printf '{"iid":7,"project_id":314,"title":"Fix cutter","state":"opened","web_url":"https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7","description":"%s","labels":["bug"],"author":{"id":7,"username":"ivan"},"assignees":[{"id":42,"username":"mate"}],"updated_at":"2026-07-18T00:00:00Z"}\n' "$long"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests\?*)
       scenario=${FM_FAKE_MR_LIST_SCENARIO:-exact}
@@ -93,6 +120,10 @@ if [ "${1:-}" = api ]; then
     projects/kisscut-museum%2Fkisscut-platform/merge_requests)
       emit_mr_json 5 "${FM_FAKE_CREATED_MR_IDENTITY:-exact}"
       printf '\n'
+      ;;
+    projects/kisscut-museum%2Fkisscut-platform/repository/branches/fm%2Ffix)
+      printf '{"name":"fm/fix","commit":{"id":"%s"}}\n' \
+        "${FM_FAKE_REMOTE_BRANCH_SHA:-$FM_FAKE_LOCAL_HEAD}"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5/pipelines\?*)
       pipeline_sha=${FM_FAKE_PIPELINE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
@@ -126,7 +157,7 @@ if [ "${1:-}" = api ]; then
       esac
       ;;
     projects/kisscut-museum%2Fkisscut-platform)
-      printf '{"id":314,"default_branch":"main","builds_access_level":"%s"}\n' \
+      printf '{"id":314,"default_branch":"main","archived":false,"builds_access_level":"%s"}\n' \
         "${FM_FAKE_BUILDS_ACCESS_LEVEL:-enabled}"
       ;;
     *)
@@ -147,6 +178,19 @@ exit 1
 SH
 chmod +x "$FAKEBIN/glab"
 
+cat > "$FAKEBIN/iconv" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${FM_FAKE_REPLACE_BODY:-}" ]; then
+  printf 'Replacement body\n' > "$FM_FAKE_REPLACE_BODY"
+fi
+if [ "${FM_FAKE_INTERRUPT_BODY:-0}" = 1 ]; then
+  kill -TERM "$PPID"
+  exit 143
+fi
+exec "$FM_FAKE_REAL_ICONV" "$@"
+SH
+chmod +x "$FAKEBIN/iconv"
+
 cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_FAKE_GH_LOG"
@@ -156,11 +200,19 @@ chmod +x "$FAKEBIN/gh"
 
 run_adapter() {
   local -a args=("$@")
+  local fake_mr_sha=${FM_FAKE_MR_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+  local fake_local_head
+  fake_local_head=$(git -C "$REPO" rev-parse HEAD)
+  if [ "${1:-}" = mr-create ] && [ -z "${FM_FAKE_MR_SHA:-}" ]; then
+    fake_mr_sha=$(git -C "$REPO" rev-parse HEAD)
+  fi
   if [ "${1:-}" = mr-merge ] && [ "${FM_TEST_NO_DEFAULT_SHA:-0}" != 1 ]; then
     args+=(--sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
   fi
   PATH="$FAKEBIN:$PATH" FM_FAKE_GLAB_LOG="$LOG" FM_FAKE_GH_LOG="$GH_LOG" \
     FM_FAKE_MERGED_MARKER="$MERGED_MARKER" FM_FORGE_HOSTS_FILE="${FM_FORGE_HOSTS_FILE:-}" \
+    FM_FAKE_MR_SHA="$fake_mr_sha" FM_FAKE_LOCAL_HEAD="$fake_local_head" \
+    FM_FAKE_REAL_ICONV="$REAL_ICONV" \
     GITLAB_TOKEN=TEST_AMBIENT_TOKEN GITLAB_ACCESS_TOKEN=TEST_ACCESS_TOKEN \
     OAUTH_TOKEN=TEST_OAUTH_TOKEN GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN \
     "$ADAPTER" "${args[@]}"
@@ -273,6 +325,33 @@ test_mr_url_must_match_origin() {
   pass "merge-request URLs cannot override the origin host or project"
 }
 
+test_canonical_resource_urls_share_strict_validation() {
+  local command url out rc
+  reset_case
+  run_adapter issue-view "$REPO" \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7' >/dev/null \
+    || fail "canonical issue URL should resolve"
+  run_adapter mr-view "$REPO" \
+    'https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5' >/dev/null \
+    || fail "canonical merge-request URL should resolve"
+
+  while IFS='|' read -r command url; do
+    reset_case
+    out=$(run_adapter "$command" "$REPO" "$url" 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "$command malformed canonical URL"
+    [ ! -s "$LOG" ] || fail "$command malformed canonical URL reached credentials"
+  done <<'CASES'
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/07
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/7?x=1
+issue-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/7
+mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/05
+mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5#fragment
+mr-view|https://gitlab.com/kisscut-museum/kisscut-platform/-/issues/5
+CASES
+  pass "issue and merge-request URLs share strict canonical validation"
+}
+
 test_mr_body_file_cannot_read_outside_worktree() {
   local outside out rc before
   reset_case
@@ -328,11 +407,127 @@ test_mr_create_reuses_only_one_exact_match() {
   assert_no_grep '--method POST' "$LOG" "exact reuse created another merge request"
 
   reset_case
+  out=$(FM_FAKE_MR_TITLE='Conflicting title' run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "conflicting merge-request retry metadata"
+  assert_contains "$out" "does not match requested head and metadata" \
+    "conflicting merge-request retry refusal"
+  assert_no_grep '--method POST' "$LOG" "conflicting retry created another merge request"
+
+  reset_case
+  out=$(FM_FAKE_MR_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "stale merge-request retry head"
+  assert_contains "$out" "does not match requested head and metadata" \
+    "stale merge-request retry refusal"
+
+  reset_case
+  out=$(FM_FAKE_MR_AUTHOR=other run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "foreign-authored merge-request reuse"
+  assert_contains "$out" "author is not authenticated user" \
+    "foreign-authored merge-request reuse refusal"
+  assert_no_grep '--method POST' "$LOG" "foreign-authored candidate created another merge request"
+
+  reset_case
   out=$(FM_FAKE_MR_LIST_SCENARIO=none run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix) \
     || fail "missing merge request should be created"
   [ "$(jq -r '.mr.already' <<< "$out")" = false ] || fail "new merge request reported reuse"
-  assert_grep '--method POST --raw-field source_branch=fm/fix --raw-field target_branch=main' \
+  assert_grep '--method POST --input -' \
     "$LOG" "merge-request creation was not branch-bound"
+
+  reset_case
+  printf 'Retry body\n\n' > "$REPO/mr-retry-body.md"
+  out=$(FM_FAKE_MR_DESCRIPTION=$'Retry body\n\n' run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix --body-file "$REPO/mr-retry-body.md") \
+    || fail "merge-request retry should preserve trailing body newlines"
+  [ "$(jq -r '.mr.already' <<< "$out")" = true ] \
+    || fail "matching body retry was not reused"
+
+  reset_case
+  out=$(FM_FAKE_MR_DESCRIPTION='Retry body' run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix --body-file "$REPO/mr-retry-body.md" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "retry body trailing-newline mismatch"
+  assert_contains "$out" "does not match requested head and metadata" \
+    "retry body trailing-newline refusal"
+
+  reset_case
+  printf '\300\257' > "$REPO/mr-invalid-utf8.md"
+  out=$(run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix \
+    --body-file "$REPO/mr-invalid-utf8.md" 2>&1)
+  rc=$?
+  expect_code 2 "$rc" "malformed UTF-8 merge-request body"
+  assert_contains "$out" "must contain valid UTF-8" "malformed UTF-8 body refusal"
+  [ ! -s "$LOG" ] || fail "malformed UTF-8 body reached forge credentials"
+
+  reset_case
+  printf 'Interrupted body\n' > "$REPO/mr-interrupted-body.md"
+  out=$(FM_FAKE_INTERRUPT_BODY=1 run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix --body-file "$REPO/mr-interrupted-body.md" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "interrupted body validation unexpectedly succeeded"
+  if compgen -G "$REPO/.fm-forge-body.*" >/dev/null; then
+    fail "interrupted body validation left a snapshot behind"
+  fi
+
+  reset_case
+  printf 'Captured body\n\n' > "$REPO/mr-snapshot-body.md"
+  out=$(FM_FAKE_MR_DESCRIPTION=$'Captured body\n\n' \
+    FM_FAKE_REPLACE_BODY="$REPO/mr-snapshot-body.md" \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix \
+      --body-file "$REPO/mr-snapshot-body.md") \
+    || fail "merge-request retry should use the captured body snapshot"
+  [ "$(jq -r '.mr.already' <<< "$out")" = true ] \
+    || fail "captured body snapshot retry was not reused"
+
+  reset_case
+  printf 'Requested body\n\n' > "$REPO/mr-create-body.md"
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_TITLE='Draft: Detailed fix' \
+    FM_FAKE_MR_DESCRIPTION=$'Requested body\n\n' FM_FAKE_MR_DRAFT=true FM_FAKE_MR_REMOVE_SOURCE=true \
+    run_adapter mr-create "$REPO" --title 'Detailed fix' --source fm/fix \
+      --body-file "$REPO/mr-create-body.md" --draft --remove-source-branch) \
+    || fail "requested merge-request metadata should verify after creation"
+  [ "$(jq -r '.mr.already' <<< "$out")" = false ] \
+    || fail "verified new merge request reported reuse"
+  assert_grep '"description":"Requested body\n\n"' "$LOG" \
+    "merge-request POST did not preserve trailing body newlines"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none \
+    FM_FAKE_REMOTE_BRANCH_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "stale remote source branch head"
+  assert_contains "$out" "does not match checked-out HEAD" "stale remote head refusal"
+  assert_no_grep '--method POST' "$LOG" "stale remote head still created a merge request"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_TITLE='Wrong read-back title' \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "created merge-request metadata mismatch"
+  assert_contains "$out" "head and metadata verification mismatch" \
+    "created merge-request metadata refusal"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "created merge-request head mismatch"
+  assert_contains "$out" "head and metadata verification mismatch" \
+    "created merge-request head refusal"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_AUTHOR=other \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "foreign-authored created merge request"
+  assert_contains "$out" "created merge-request author is not authenticated user" \
+    "foreign-authored created merge-request refusal"
 
   reset_case
   out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_CREATED_MR_IDENTITY=fork \
@@ -586,6 +781,7 @@ test_registered_self_hosted_gitlab_is_explicit
 test_unsupported_and_ambiguous_hosts_never_reach_credentials
 test_issue_output_is_minimal_and_bounded
 test_mr_url_must_match_origin
+test_canonical_resource_urls_share_strict_validation
 test_mr_body_file_cannot_read_outside_worktree
 test_mr_find_requires_one_exact_project_and_branch_match
 test_mr_create_reuses_only_one_exact_match

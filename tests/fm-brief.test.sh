@@ -71,6 +71,26 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+test_gitlab_mutations_use_guarded_adapter() {
+  local home id brief
+  home="$TMP_ROOT/gitlab-adapter-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-gitlab-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" project --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" project >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_grep "For GitLab issue and merge-request comments or metadata/lifecycle changes" "$brief" \
+      "$kind brief did not route GitLab mutations through the guarded adapter"
+    assert_grep "never call raw \`glab\`" "$brief" \
+      "$kind brief did not forbid raw glab lifecycle mutations"
+  done
+  pass "fm-brief.sh: ship and scout work use named guarded GitLab mutation commands"
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -348,6 +368,7 @@ test_scout_and_secondmate_scaffold() {
 test_script_parses
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_gitlab_mutations_use_guarded_adapter
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
