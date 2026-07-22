@@ -408,6 +408,15 @@ test_mr_create_reuses_only_one_exact_match() {
     "retry body trailing-newline refusal"
 
   reset_case
+  printf '\300\257' > "$REPO/mr-invalid-utf8.md"
+  out=$(run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix \
+    --body-file "$REPO/mr-invalid-utf8.md" 2>&1)
+  rc=$?
+  expect_code 2 "$rc" "malformed UTF-8 merge-request body"
+  assert_contains "$out" "must contain valid UTF-8" "malformed UTF-8 body refusal"
+  [ ! -s "$LOG" ] || fail "malformed UTF-8 body reached forge credentials"
+
+  reset_case
   printf 'Requested body\n\n' > "$REPO/mr-create-body.md"
   out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_TITLE='Draft: Detailed fix' \
     FM_FAKE_MR_DESCRIPTION=$'Requested body\n\n' FM_FAKE_MR_DRAFT=true FM_FAKE_MR_REMOVE_SOURCE=true \

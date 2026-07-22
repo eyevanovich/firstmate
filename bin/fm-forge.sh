@@ -320,6 +320,8 @@ load_body_file() {
     ''|*[!0-9]*) usage "$purpose file size unavailable" ;;
   esac
   [ "$bytes" -le "$max_bytes" ] || usage "$purpose file exceeds the $max_bytes-byte limit"
+  iconv -f UTF-8 -t UTF-8 "$file_real" >/dev/null 2>&1 \
+    || usage "$purpose file must contain valid UTF-8"
   FM_GITLAB_BODY_JSON=$(jq -eRs 'select(index("\u0000") | not)' < "$file_real") \
     || usage "$purpose file contains a NUL byte"
   [ -n "$FM_GITLAB_BODY_JSON" ] || usage "$purpose file contains invalid text"
