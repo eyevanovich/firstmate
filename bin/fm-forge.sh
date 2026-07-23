@@ -24,8 +24,12 @@
 # project independently reports that its CI/CD builds feature is disabled.
 #
 # Output is compact JSON except mr-poll, which prints exactly "merged" or nothing.
-# Repeating an already-satisfied state mutation is a verified no-op. Repeating a
-# note with the same body by the same authenticated user returns the prior note.
+# Closing an issue or merge request removes every workflow label while preserving
+# unrelated labels and ownership, and retries converge without repeating the close.
+# Repeating an already-satisfied state mutation is a verified no-op.
+# Repeating an exact non-system note by the authenticated user returns the prior
+# endpoint-scoped note; WorkItem noteable IDs are opaque, while legacy Issue and
+# MergeRequest notes must match the resource's numeric API ID.
 #
 # Usage:
 #   fm-forge.sh repo <repo>
