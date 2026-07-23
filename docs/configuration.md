@@ -414,6 +414,7 @@ FM_NM_OBSERVER_WAIT_SECS=180  # seconds allowed to discover an authoritative run
 FM_NM_OBSERVER_POLL_SECS=1  # seconds between observer run-id discovery reads
 FM_NM_OBSERVER_SETTLE_SECS=0.2  # seconds before checking whether a newly opened observer exited immediately
 FM_NM_OBSERVER_COMMAND_TIMEOUT=10  # seconds allowed per observer-only status or terminal CLI call before manual-attach fallback
+FM_NM_OBSERVER_SESSION_RETRIES=100  # bounded internal attempts to acquire the observer lifecycle lock
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by working/paused watcher triage
 FMX_PAIRING_TOKEN=      # X mode pairing token; .env opt-in authorizes replies and eligible lifecycle actions
 FMX_RELAY_URL=https://myfirstmate.io   # optional X relay override, mainly for local relay development
