@@ -278,6 +278,23 @@ EOF
   pass "observer start uses every verified harness invocation and discovers the new run id"
 }
 
+test_start_adopts_every_nonterminal_run() {
+  local status vals home repo branch out
+  for status in awaiting_approval fix_review queued; do
+    reset_fakes
+    vals=$(make_home "nonterminal-$status" claude zellij)
+    IFS=$'\t' read -r home repo branch <<EOF
+$vals
+EOF
+    write_nm "run-$status" "$branch" "$status"
+    out=$(run_observer "$home" start task 2>&1)
+    [ ! -s "$FM_TEST_SEND_LOG" ] || fail "start reinvoked validation for nonterminal status $status"
+    assert_contains "$out" "no-mistakes attach --run 'run-$status'" "start did not adopt nonterminal status $status"
+    git -C "$TMP_ROOT/nonterminal-$status-base" worktree remove --force "$repo" >/dev/null
+  done
+  pass "start adopts every authoritative nonterminal branch run"
+}
+
 test_tmux_one_observer_no_focus_and_worker_separation() {
   local vals home repo branch out record target
   reset_fakes
@@ -593,6 +610,37 @@ EOF
   pass "bounded Herdr observer failures preserve validation and exact manual attach fallback"
 }
 
+test_herdr_submit_phases_reconcile_without_duplicate_text() {
+  local vals home repo branch record out
+  reset_fakes
+  vals=$(make_home herdr-submit-phases claude herdr)
+  IFS=$'\t' read -r home repo branch <<EOF
+$vals
+EOF
+  write_nm run-herdr-phases "$branch" running
+  run_observer "$home" open task --run run-herdr-phases >/dev/null
+  record="$home/state/task.observer"
+
+  sed 's/^status=ready$/status=staged/' "$record" > "$record.tmp"
+  chmod 600 "$record.tmp"
+  mv "$record.tmp" "$record"
+  : > "$FM_TEST_HERDR_LOG"
+  run_observer "$home" open task --run run-herdr-phases >/dev/null
+  assert_no_grep $'pane\037send-text' "$FM_TEST_HERDR_LOG" "staged retry typed the attach command twice"
+  assert_grep $'pane\037send-keys\037w1:p-observer\037enter' "$FM_TEST_HERDR_LOG" "staged retry did not submit the existing command"
+
+  sed 's/^status=ready$/status=staging/' "$record" > "$record.tmp"
+  chmod 600 "$record.tmp"
+  mv "$record.tmp" "$record"
+  : > "$FM_TEST_HERDR_LOG"
+  out=$(run_observer "$home" open task --run run-herdr-phases 2>&1)
+  assert_contains "$out" "automatic observer launch failed without affecting validation" "unknown send-text outcome did not fail safely"
+  assert_no_grep $'pane\037send-text' "$FM_TEST_HERDR_LOG" "unknown send-text outcome repeated the attach command"
+  assert_no_grep $'pane\037send-keys' "$FM_TEST_HERDR_LOG" "unknown send-text outcome submitted unknown input"
+  git -C "$TMP_ROOT/herdr-submit-phases-base" worktree remove --force "$repo" >/dev/null
+  pass "Herdr submit phases resume only a known staged command"
+}
+
 test_herdr_no_focus_separation_and_exact_cleanup() {
   local vals home repo branch record out
   reset_fakes
@@ -636,6 +684,7 @@ test_header_and_contract_keep_observer_non_owner() {
 }
 
 test_harness_start_invocations_and_run_discovery
+test_start_adopts_every_nonterminal_run
 test_tmux_one_observer_no_focus_and_worker_separation
 test_detach_stays_detached_until_reopen
 test_internal_attach_exit_marks_detached
@@ -647,5 +696,6 @@ test_cleanup_identity_mismatch_refuses
 test_unreadable_identity_refuses_cleanup
 test_interrupted_creates_reconcile_without_duplicates
 test_herdr_timeout_falls_back_without_touching_worker
+test_herdr_submit_phases_reconcile_without_duplicate_text
 test_herdr_no_focus_separation_and_exact_cleanup
 test_header_and_contract_keep_observer_non_owner

@@ -49,10 +49,13 @@
 # Exact v1 fields are version, task, run, branch, worker_backend, worker_target,
 # observer_backend, observer_label, observer_target, observer_session,
 # observer_workspace_id, observer_tab_id, observer_pane_id, token, status,
-# exit_code, created_at, and updated_at. Status is creating, ready, attached,
-# detached, or failed. The token is generated before endpoint creation and is
+# exit_code, created_at, and updated_at. Status is creating, ready, staging,
+# staged, submitting, attached, detached, or failed. The token is generated
+# before endpoint creation and is
 # embedded in the visible label, so an interrupted create can be reconciled
-# idempotently without guessing from a task label alone.
+# idempotently without guessing from a task label alone. Herdr additionally
+# records staging, staged, and submitting around its separate text and Enter
+# operations so retries never repeat an operation with an unknown outcome.
 #
 # `cleanup` is called by fm-teardown.sh after landing/safety checks and before
 # destructive task cleanup. It refuses to close anything while the recorded run
@@ -229,7 +232,7 @@ record_load() {  # <path>
   [ -n "$R_OBSERVER_LABEL" ] || return 1
   case "$R_TOKEN" in ''|*[!A-Fa-f0-9]*) return 1 ;; esac
   [ "${#R_TOKEN}" -eq 32 ] || return 1
-  case "$R_STATUS" in creating|ready|attached|detached|failed) ;; *) return 1 ;; esac
+  case "$R_STATUS" in creating|ready|staging|staged|submitting|attached|detached|failed) ;; *) return 1 ;; esac
   if [ "$R_STATUS" != creating ] && [ "$R_STATUS" != failed ]; then
     [ -n "$R_OBSERVER_TARGET" ] || return 1
   fi
@@ -643,10 +646,23 @@ observer_herdr_launch() {
 
   state=$(herdr_record_identity_state)
   [ "$state" = present ] || return 1
+  case "$R_STATUS" in
+    staging|submitting) return 1 ;;
+  esac
   if [ "$R_STATUS" = ready ]; then
+    R_STATUS=staging
+    record_write "$RECORD" || return 1
     cmd=$(session_command)
     observer_herdr_cli "$R_OBSERVER_SESSION" pane send-text "$R_OBSERVER_PANE_ID" "$cmd" >/dev/null 2>&1 || return 1
+    R_STATUS=staged
+    record_write "$RECORD" || return 1
+  fi
+  if [ "$R_STATUS" = staged ]; then
+    R_STATUS=submitting
+    record_write "$RECORD" || return 1
     observer_herdr_cli "$R_OBSERVER_SESSION" pane send-keys "$R_OBSERVER_PANE_ID" enter >/dev/null 2>&1 || return 1
+    R_STATUS=ready
+    record_write "$RECORD" || return 1
   fi
   return 0
 }
@@ -721,7 +737,7 @@ observer_prepare_run() {  # <run-id> <allow-reopen:0|1>
         observer_record_initialize "$run" || return 1
         return 0
         ;;
-      creating|ready)
+      creating|ready|staging|staged|submitting)
         return 0
         ;;
     esac
@@ -801,9 +817,14 @@ discover_run_after_start() {  # <prior-id>
 
 start_action() {
   local prior_id="" run invocation
-  if nm_capture && [ "$NM_STATUS" = running ]; then
-    observer_open_run "$NM_ID" 0
-    return 0
+  if nm_capture; then
+    case "$NM_STATUS" in
+      completed|failed|cancelled) ;;
+      *)
+        observer_open_run "$NM_ID" 0
+        return 0
+        ;;
+    esac
   fi
   prior_id=$NM_ID
   invocation=$(validation_invocation "$HARNESS") || {
