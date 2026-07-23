@@ -1242,6 +1242,60 @@ test_local_only_force_overrides_unpushed() {
   pass "local-only worktree with unpushed work is torn down under --force (escape hatch)"
 }
 
+test_teardown_cleans_exact_observer_before_worker() {
+  local case_dir token observer_line worker_line
+  case_dir=$(make_case observer-cleanup)
+  write_meta "$case_dir" no-mistakes ship
+  token=0123456789abcdef0123456789abcdef
+  cat > "$case_dir/state/task-x1.observer" <<EOF
+version=1
+task=task-x1
+run=run-observer
+branch=fm/task-x1
+worker_backend=tmux
+worker_target=fm-task-x1
+observer_backend=tmux
+observer_label=nm-observer-task-x1-01234567
+observer_target=@9
+observer_session=crew
+observer_workspace_id=
+observer_tab_id=
+observer_pane_id=%9
+token=$token
+status=attached
+exit_code=
+created_at=1784698348
+updated_at=1784698348
+EOF
+  chmod 600 "$case_dir/state/task-x1.observer"
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = 'axi status' ]; then
+  printf '%s\n' 'run:' '  id: run-observer' '  branch: fm/task-x1' '  status: completed'
+  exit 0
+fi
+exit 1
+SH
+  cat > "$case_dir/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$case_dir/tmux.log'
+if [ "\${1:-}" = list-windows ]; then
+  printf '@9\\t%%9\\tnm-observer-task-x1-01234567\\ttask-x1\\trun-observer\\t%s\\n' '$token'
+fi
+exit 0
+EOF
+  chmod +x "$case_dir/fakebin/no-mistakes" "$case_dir/fakebin/tmux"
+
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "observer-cleanup: teardown failed: $(cat "$case_dir/stderr")"
+  observer_line=$(grep -nF 'kill-window -t @9' "$case_dir/tmux.log" | cut -d: -f1)
+  worker_line=$(grep -nF 'kill-window -t fm-task-x1' "$case_dir/tmux.log" | cut -d: -f1)
+  [ -n "$observer_line" ] || fail "observer-cleanup: teardown did not close the exact observer"
+  [ -n "$worker_line" ] || fail "observer-cleanup: teardown did not reach worker cleanup"
+  [ "$observer_line" -lt "$worker_line" ] || fail "observer-cleanup: worker cleanup preceded exact observer cleanup"
+  pass "teardown delegates exact observer cleanup before worker cleanup"
+}
+
 test_herdr_teardown_clears_escalation_marker() {
   local case_dir marker
   case_dir=$(make_case herdr-marker-cleanup)
@@ -1271,6 +1325,7 @@ test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
+test_teardown_cleans_exact_observer_before_worker
 test_herdr_teardown_clears_escalation_marker
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head

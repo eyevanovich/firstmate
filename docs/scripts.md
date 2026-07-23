@@ -43,6 +43,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-forge-lib.sh`       | Resolve trusted forge identity from a clone origin and own authenticated GitLab transport |
 | `fm-forge.sh`           | Provide the narrow token-efficient GitLab issue, merge-request, and pipeline interface |
 | `fm-signing-agent.sh`   | Preflight direct SSH signing or bridge an explicitly configured signing agent into isolated workers |
+| `fm-no-mistakes-observer.sh` | Start worker-owned validation and own its separate captain-visible observer terminal |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
 | `fm-review-diff.sh`      | Review a crewmate branch or recorded PR head against the authoritative base          |
 | `fm-marker-lib.sh`       | Shared from-firstmate request marker, detector, and idempotent transformation         |
