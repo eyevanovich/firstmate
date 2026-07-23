@@ -16,6 +16,9 @@
 # source branch, and the trusted project's target branch before any action.
 # MR mutations additionally require the authenticated user to be the author and
 # preserve the source head SHA; merge remains exclusively guarded as below.
+# MR creation and reuse verify the exact requested metadata and the MR-specific
+# source-branch removal intent; project removal policy and defaults are not substitutes.
+# Verification failures report only mismatched field names.
 # Body and note files must be regular non-symlink files inside the worktree.
 # JSON mutations use glab api --input - with Content-Type: application/json;
 # --input sends raw bytes and does not infer that media type itself.
@@ -648,17 +651,39 @@ mr_author_is_self() {
     ' <<< "$1" >/dev/null 2>&1
 }
 
-mr_create_state_valid() {
+mr_create_state_mismatches() {
   local raw=$1 head=$2 title=$3 description_json=$4 draft=$5 remove_source=$6
-  jq -e --arg head "$head" --arg title "$title" --argjson description "$description_json" \
-    --argjson draft "$draft" --argjson remove_source "$remove_source" '
-      .state == "opened"
-      and .sha == $head
-      and .title == $title
-      and (.description // "") == $description
-      and .draft == $draft
-      and .force_remove_source_branch == $remove_source
-    ' <<< "$raw" >/dev/null 2>&1
+  jq -r --arg head "$head" --arg title "$title" --argjson description "$description_json" \
+    --argjson draft "$draft" --argjson remove_source "$remove_source" \
+    --argjson user_id "$FM_GITLAB_USER_ID" --arg username "$FM_GITLAB_USERNAME" '
+      def draft_state:
+        if (.draft | type) == "boolean" then .draft
+        elif (.work_in_progress | type) == "boolean" then .work_in_progress
+        else null end;
+      def description_state:
+        if (.description | type) == "string" then .description
+        elif .description == null and has("description") then ""
+        else null end;
+      [
+        if .state == "opened" then empty else "state" end,
+        if .sha == $head then empty else "sha" end,
+        if .title == $title then empty else "title" end,
+        if description_state == $description then empty else "description" end,
+        if draft_state == $draft then empty else "draft" end,
+        if ((.should_remove_source_branch | type) == "boolean"
+          and .should_remove_source_branch == $remove_source)
+          then empty else "should_remove_source_branch" end,
+        if .author.id == $user_id then empty else "author.id" end,
+        if .author.username == $username then empty else "author.username" end
+      ] | join(",")
+    ' <<< "$raw" 2>/dev/null
+}
+
+require_mr_create_state() {
+  local context=$1 mismatches
+  shift
+  mismatches=$(mr_create_state_mismatches "$@") || mismatches=payload
+  [ -z "$mismatches" ] || fail "$context mismatch ($mismatches)"
 }
 
 prepare_mr_mutation() {
@@ -1315,10 +1340,8 @@ cmd_mr_create() {
       || fail "merge-request identity is unavailable"
     mr_identity_valid "$raw" "$iid" "$source" "$target" \
       || fail "merge-request identity does not match the trusted repository and branches"
-    mr_author_is_self "$raw" \
-      || fail "matching merge-request author is not authenticated user $FM_GITLAB_USERNAME"
-    mr_create_state_valid "$raw" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
-      || fail "matching merge request does not match requested head and metadata"
+    require_mr_create_state "matching merge request does not match requested head and metadata" \
+      "$raw" "$head" "$expected_title" "$body_json" "$draft" "$remove_source"
     emit_mr "$raw" true
     return 0
   fi
@@ -1346,10 +1369,8 @@ cmd_mr_create() {
     || fail "created merge-request identity does not match the trusted repository and branches"
   verified=$(checked_mr_raw "$iid" "$source" "$target") \
     || fail "created merge-request identity could not be read back"
-  mr_author_is_self "$verified" \
-    || fail "created merge-request author is not authenticated user $FM_GITLAB_USERNAME"
-  mr_create_state_valid "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
-    || fail "created merge-request head and metadata verification mismatch"
+  require_mr_create_state "created merge-request head and metadata verification" \
+    "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source"
   emit_mr "$verified"
 }
 
