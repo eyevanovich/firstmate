@@ -83,7 +83,6 @@ FM_GITLAB_PROJECT_ID=
 FM_GITLAB_DEFAULT_BRANCH=
 FM_GITLAB_CI_DISABLED=
 FM_GITLAB_PROJECT_ARCHIVED=
-FM_GITLAB_PROJECT_REMOVE_SOURCE_DEFAULT=
 FM_GITLAB_USER_ID=
 FM_GITLAB_USERNAME=
 FM_GITLAB_BODY_JSON=
@@ -166,13 +165,6 @@ load_trusted_project() {
     || return 1
   FM_GITLAB_PROJECT_ARCHIVED=$(jq -r '
       if (.archived | type) == "boolean" then .archived else error("invalid archived flag") end
-    ' <<< "$raw") || return 1
-  FM_GITLAB_PROJECT_REMOVE_SOURCE_DEFAULT=$(jq -r '
-      if has("remove_source_branch_after_merge") then
-        if (.remove_source_branch_after_merge | type) == "boolean" then
-          .remove_source_branch_after_merge
-        else error("invalid remove source branch default") end
-      else false end
     ' <<< "$raw") || return 1
   FM_GITLAB_CI_DISABLED=$(jq -r '
       if has("builds_access_level") then
