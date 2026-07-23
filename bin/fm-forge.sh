@@ -543,22 +543,57 @@ issue_update() {
     | gitlab_json_api "projects/$pid/issues/$iid" --method PUT --input - >/dev/null
 }
 
-note_identity_valid() {
-  local raw=$1 iid=$2 noteable_id=$3 types=$4 body_json=$5
-  jq -e --argjson iid "$iid" --argjson noteable_id "$noteable_id" \
+note_identity_mismatches() {
+  local raw=$1 kind=$2 iid=$3 legacy_id=$4 body_json=$5 expected_note_id=${6:-0}
+  jq -r --arg kind "$kind" --argjson iid "$iid" --argjson legacy_id "$legacy_id" \
+    --argjson expected_note_id "$expected_note_id" \
     --argjson project_id "$FM_GITLAB_PROJECT_ID" --argjson user_id "$FM_GITLAB_USER_ID" \
-    --arg username "$FM_GITLAB_USERNAME" --argjson types "$types" --argjson body "$body_json" '
-      (.id | type) == "number" and .id > 0 and .id == (.id | floor)
-      and .project_id == $project_id
-      and .noteable_id == $noteable_id
-      and (.noteable_type as $actual | any($types[]; . == $actual))
-      and (if .noteable_type == "WorkItem" then .noteable_iid == null
-        else .noteable_iid == $iid end)
-      and .body == $body
-      and .system == false
-      and .author.id == $user_id
-      and .author.username == $username
-    ' <<< "$raw" >/dev/null 2>&1
+    --arg username "$FM_GITLAB_USERNAME" --argjson body "$body_json" '
+      def positive_integer:
+        type == "number" and . > 0 and . == floor;
+      [
+        if ((.id | positive_integer) and ($expected_note_id == 0 or .id == $expected_note_id))
+          then empty else "id" end,
+        if .project_id == $project_id then empty else "project_id" end,
+        if (($kind == "issue" and (.noteable_type == "Issue" or .noteable_type == "WorkItem"))
+          or ($kind == "mr" and .noteable_type == "MergeRequest"))
+          then empty else "noteable_type" end,
+        if (if .noteable_type == "WorkItem" then (.noteable_id | positive_integer)
+          else .noteable_id == $legacy_id end)
+          then empty else "noteable_id" end,
+        if (if .noteable_type == "WorkItem" then .noteable_iid == null
+          else .noteable_iid == $iid end)
+          then empty else "noteable_iid" end,
+        if .body == $body then empty else "body" end,
+        if .system == false then empty else "system" end,
+        if .author.id == $user_id then empty else "author.id" end,
+        if .author.username == $username then empty else "author.username" end
+      ] | join(",")
+    ' <<< "$raw" 2>/dev/null
+}
+
+note_identity_valid() {
+  local mismatches
+  mismatches=$(note_identity_mismatches "$@") || return 1
+  [ -z "$mismatches" ]
+}
+
+require_note_identity() {
+  local context=$1 mismatches
+  shift
+  mismatches=$(note_identity_mismatches "$@") || mismatches=payload
+  [ -z "$mismatches" ] || fail "$context mismatch ($mismatches)"
+}
+
+find_matching_note() {
+  local notes=$1 kind=$2 iid=$3 legacy_id=$4 body_json=$5 candidate
+  while IFS= read -r candidate; do
+    if note_identity_valid "$candidate" "$kind" "$iid" "$legacy_id" "$body_json"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(jq -c '.[]' <<< "$notes")
+  return 1
 }
 
 emit_note() {
@@ -570,29 +605,18 @@ emit_note() {
 }
 
 post_note() {
-  local kind=$1 iid=$2 noteable_id=$3 body_json=$4 pid endpoint types notes existing created note_id verified
+  local kind=$1 iid=$2 legacy_id=$3 body_json=$4 pid endpoint notes existing created note_id verified
   pid=$(project_id) || return 1
   case "$kind" in
-    issue) endpoint="issues/$iid"; types='["Issue","WorkItem"]' ;;
-    mr) endpoint="merge_requests/$iid"; types='["MergeRequest"]' ;;
+    issue) endpoint="issues/$iid" ;;
+    mr) endpoint="merge_requests/$iid" ;;
     *) return 1 ;;
   esac
   notes=$(gitlab_api "projects/$pid/$endpoint/notes?sort=desc&order_by=created_at&per_page=100" \
     --paginate) || return 1
   jq -e 'type == "array"' <<< "$notes" >/dev/null 2>&1 || fail "$kind note list is malformed"
-  existing=$(jq -c --argjson iid "$iid" --argjson noteable_id "$noteable_id" \
-      --argjson project_id "$FM_GITLAB_PROJECT_ID" --argjson user_id "$FM_GITLAB_USER_ID" \
-      --arg username "$FM_GITLAB_USERNAME" --argjson types "$types" --argjson body "$body_json" '
-        [.[] | select(.project_id == $project_id and .noteable_id == $noteable_id
-          and (.noteable_type as $actual | any($types[]; . == $actual))
-          and (if .noteable_type == "WorkItem" then .noteable_iid == null
-            else .noteable_iid == $iid end)
-          and .body == $body and .system == false
-          and .author.id == $user_id and .author.username == $username)] | first // empty
-      ' <<< "$notes")
+  existing=$(find_matching_note "$notes" "$kind" "$iid" "$legacy_id" "$body_json" || true)
   if [ -n "$existing" ]; then
-    note_identity_valid "$existing" "$iid" "$noteable_id" "$types" "$body_json" \
-      || fail "$kind existing note identity could not be verified"
     emit_note "$kind" "$existing" true
     return 0
   fi
@@ -601,8 +625,8 @@ post_note() {
   note_id=$(jq -er '.id | numbers | select(. > 0 and floor == .)' <<< "$created") \
     || fail "$kind created note ID unavailable"
   verified=$(gitlab_api "projects/$pid/$endpoint/notes/$note_id") || return 1
-  note_identity_valid "$verified" "$iid" "$noteable_id" "$types" "$body_json" \
-    || fail "$kind note verification mismatch (resource, author, body, or note type)"
+  require_note_identity "$kind note verification" "$verified" "$kind" "$iid" "$legacy_id" \
+    "$body_json" "$note_id"
   emit_note "$kind" "$verified" false
 }
 
@@ -1082,23 +1106,37 @@ cmd_issue_note() {
 }
 
 cmd_issue_state() {
-  local action=$1 repo=$2 target=$3 desired raw labels_before payload verified
+  local action=$1 repo=$2 target=$3 desired raw labels_before expected remove_json remove_csv
+  local current_state payload verified
   case "$action" in close) desired=closed ;; reopen) desired=opened ;; *) return 1 ;; esac
   prepare_issue_mutation "$repo" "$target"
   raw=$FM_GITLAB_ISSUE_RAW
   require_self_owner "$raw"
   labels_before=$(labels_from_raw "$raw") || fail "issue labels are malformed"
-  if [ "$(jq -r '.state' <<< "$raw")" = "$desired" ]; then
+  current_state=$(jq -r '.state' <<< "$raw")
+  if [ "$action" = close ]; then
+    remove_json=$(labels_json "${FM_FORGE_WORKFLOW_LABELS[@]}")
+    remove_csv=$(labels_csv "${FM_FORGE_WORKFLOW_LABELS[@]}")
+    expected=$(expected_labels "$raw" '[]' "$remove_json") \
+      || fail "issue labels are malformed"
+  else
+    remove_csv=''
+    expected=$labels_before
+  fi
+  if [ "$current_state" = "$desired" ] && labels_match "$raw" "$expected"; then
     emit_issue "$raw"
     return 0
   fi
-  payload=$(jq -cn --arg action "$action" '{state_event:$action}')
+  payload=$(jq -cn --arg action "$action" --arg current "$current_state" \
+    --arg desired "$desired" --arg remove "$remove_csv" '
+      (if $current == $desired then {} else {state_event:$action} end)
+      + (if ($remove | length) == 0 then {} else {remove_labels:$remove} end)')
   issue_update "$FM_FORGE_ISSUE_IID" "$payload" || fail "issue $action failed"
   verified=$(checked_issue_raw "$FM_FORGE_ISSUE_IID") || fail "issue $action read-back failed"
   require_self_owner "$verified"
   [ "$(jq -r '.state' <<< "$verified")" = "$desired" ] \
     || fail "issue $action verification mismatch"
-  labels_match "$verified" "$labels_before" || fail "issue $action altered unrelated labels"
+  labels_match "$verified" "$expected" || fail "issue $action altered unrelated labels"
   emit_issue "$verified"
 }
 
@@ -1495,7 +1533,8 @@ cmd_mr_note() {
 }
 
 cmd_mr_state() {
-  local action=$1 repo=$2 target=$3 expected_target='' desired raw sha labels_before owners_before payload verified
+  local action=$1 repo=$2 target=$3 expected_target='' desired raw sha labels_before expected
+  local remove_json remove_csv current_state owners_before payload verified
   shift 3
   case "$action" in close) desired=closed ;; reopen) desired=opened ;; *) return 1 ;; esac
   while [ "$#" -gt 0 ]; do
@@ -1508,22 +1547,36 @@ cmd_mr_state() {
   done
   prepare_mr_mutation "$repo" "$target" "$expected_target"
   raw=$FM_GITLAB_MR_RAW
-  [ "$(jq -r '.state' <<< "$raw")" != merged ] || fail "merged merge requests cannot change lifecycle state"
-  if [ "$(jq -r '.state' <<< "$raw")" = "$desired" ]; then
-    emit_mr "$raw"
-    return 0
-  fi
+  current_state=$(jq -r '.state' <<< "$raw")
+  [ "$current_state" != merged ] || fail "merged merge requests cannot change lifecycle state"
   sha=$(jq -r '.sha' <<< "$raw")
   labels_before=$(labels_from_raw "$raw") || fail "merge-request labels are malformed"
   owners_before=$(jq -c '[.assignees[] | {id,username}] | sort_by(.id,.username)' <<< "$raw") \
     || fail "merge-request assignees are malformed"
-  payload=$(jq -cn --arg action "$action" '{state_event:$action}')
+  if [ "$action" = close ]; then
+    remove_json=$(labels_json "${FM_FORGE_WORKFLOW_LABELS[@]}")
+    remove_csv=$(labels_csv "${FM_FORGE_WORKFLOW_LABELS[@]}")
+    expected=$(expected_labels "$raw" '[]' "$remove_json") \
+      || fail "merge-request labels are malformed"
+  else
+    remove_csv=''
+    expected=$labels_before
+  fi
+  if [ "$current_state" = "$desired" ] && labels_match "$raw" "$expected"; then
+    emit_mr "$raw"
+    return 0
+  fi
+  payload=$(jq -cn --arg action "$action" --arg current "$current_state" \
+    --arg desired "$desired" --arg remove "$remove_csv" '
+      (if $current == $desired then {} else {state_event:$action} end)
+      + (if ($remove | length) == 0 then {} else {remove_labels:$remove} end)')
   mr_update "$FM_FORGE_MR_IID" "$payload" || fail "merge-request $action failed"
   verified=$(refresh_mr_after_mutation "$FM_FORGE_MR_IID" "$sha") \
     || fail "merge-request $action read-back failed"
   [ "$(jq -r '.state' <<< "$verified")" = "$desired" ] \
     || fail "merge-request $action verification mismatch"
-  labels_match "$verified" "$labels_before" || fail "merge-request $action altered unrelated labels"
+  mr_author_is_self "$verified" || fail "merge-request $action altered author"
+  labels_match "$verified" "$expected" || fail "merge-request $action altered unrelated labels"
   jq -e --argjson expected "$owners_before" \
     '[.assignees[] | {id,username}] | sort_by(.id,.username) == $expected' \
     <<< "$verified" >/dev/null 2>&1 || fail "merge-request $action altered assignees"
