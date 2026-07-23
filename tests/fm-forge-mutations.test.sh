@@ -484,6 +484,27 @@ test_malformed_created_note_id_is_rejected() {
   pass "malformed created note IDs cannot pass read-back verification"
 }
 
+test_malformed_matching_note_id_is_rejected_without_posting() {
+  local note out rc
+  reset_case
+  note="$REPO/malformed-existing-note.md"
+  printf 'Malformed existing note.\n' > "$note"
+  jq -cn --rawfile body "$note" '
+    [{id:0,body:$body,author:{id:42,username:"mate"},system:false,
+      noteable_id:77146,noteable_type:"WorkItem",project_id:314,noteable_iid:null}]' \
+    > "$ISSUE_NOTES"
+  out=$(run_adapter issue-note "$REPO" 7 --body-file "$note" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "malformed matching note ID"
+  assert_contains "$out" "existing note identity mismatch (id)" \
+    "malformed matching note diagnostic"
+  assert_not_contains "$out" "Malformed existing note." \
+    "malformed matching note diagnostic leaked body"
+  [ "$(count_log '/issues/7/notes --hostname.*--method POST')" -eq 0 ] \
+    || fail "malformed matching note ID allowed a duplicate post"
+  pass "malformed matching note IDs fail closed without duplicate posts"
+}
+
 test_issue_create_claim_and_canonical_view() {
   local body out
   reset_case
@@ -920,6 +941,7 @@ test_live_415_regression_claim_uses_json_media_type
 test_live_work_item_note_shape_is_verified_and_idempotent
 test_note_matching_uses_one_strict_endpoint_scoped_identity
 test_malformed_created_note_id_is_rejected
+test_malformed_matching_note_id_is_rejected_without_posting
 test_issue_create_claim_and_canonical_view
 test_issue_claim_status_note_close_reopen_and_release
 test_close_retry_cleans_workflow_labels_without_repeating_transition

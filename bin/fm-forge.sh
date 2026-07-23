@@ -10,7 +10,7 @@
 # compatible /-/issues/<iid> form for the origin host and project only.
 # Ownership-changing issue operations act only on unassigned or self-owned work;
 # every later issue mutation requires exact self-ownership and verifies read-back.
-# Workflow status labels are changed only by claim, status, and release commands.
+# Workflow status labels are changed only by claim, status, release, and close commands.
 # User-supplied labels must already exist, be unambiguous, and not be archived.
 # Merge requests must match that project's numeric identity, the checked-out
 # source branch, and the trusted project's target branch before any action.
@@ -586,13 +586,17 @@ require_note_identity() {
 }
 
 find_matching_note() {
-  local notes=$1 kind=$2 iid=$3 legacy_id=$4 body_json=$5 candidate
+  local notes=$1 kind=$2 iid=$3 legacy_id=$4 body_json=$5 candidate mismatches malformed_id=false
   while IFS= read -r candidate; do
-    if note_identity_valid "$candidate" "$kind" "$iid" "$legacy_id" "$body_json"; then
+    mismatches=$(note_identity_mismatches \
+      "$candidate" "$kind" "$iid" "$legacy_id" "$body_json") || continue
+    if [ -z "$mismatches" ]; then
       printf '%s\n' "$candidate"
       return 0
     fi
+    [ "$mismatches" != id ] || malformed_id=true
   done < <(jq -c '.[]' <<< "$notes")
+  [ "$malformed_id" = false ] || return 2
   return 1
 }
 
@@ -605,7 +609,8 @@ emit_note() {
 }
 
 post_note() {
-  local kind=$1 iid=$2 legacy_id=$3 body_json=$4 pid endpoint notes existing created note_id verified
+  local kind=$1 iid=$2 legacy_id=$3 body_json=$4 pid endpoint notes existing match_status
+  local created note_id verified
   pid=$(project_id) || return 1
   case "$kind" in
     issue) endpoint="issues/$iid" ;;
@@ -615,11 +620,14 @@ post_note() {
   notes=$(gitlab_api "projects/$pid/$endpoint/notes?sort=desc&order_by=created_at&per_page=100" \
     --paginate) || return 1
   jq -e 'type == "array"' <<< "$notes" >/dev/null 2>&1 || fail "$kind note list is malformed"
-  existing=$(find_matching_note "$notes" "$kind" "$iid" "$legacy_id" "$body_json" || true)
-  if [ -n "$existing" ]; then
+  match_status=0
+  existing=$(find_matching_note "$notes" "$kind" "$iid" "$legacy_id" "$body_json") \
+    || match_status=$?
+  if [ "$match_status" -eq 0 ]; then
     emit_note "$kind" "$existing" true
     return 0
   fi
+  [ "$match_status" -ne 2 ] || fail "$kind existing note identity mismatch (id)"
   created=$(jq -cn --argjson body "$body_json" '{body:$body}' \
     | gitlab_json_api "projects/$pid/$endpoint/notes" --method POST --input -) || return 1
   note_id=$(jq -er '.id | numbers | select(. > 0 and floor == .)' <<< "$created") \
@@ -1105,32 +1113,40 @@ cmd_issue_note() {
     || fail "issue note failed"
 }
 
-cmd_issue_state() {
-  local action=$1 repo=$2 target=$3 desired raw labels_before expected remove_json remove_csv
-  local current_state payload verified
-  case "$action" in close) desired=closed ;; reopen) desired=opened ;; *) return 1 ;; esac
-  prepare_issue_mutation "$repo" "$target"
-  raw=$FM_GITLAB_ISSUE_RAW
-  require_self_owner "$raw"
-  labels_before=$(labels_from_raw "$raw") || fail "issue labels are malformed"
+state_convergence_plan() {
+  local raw=$1 action=$2 desired=$3 labels_before expected remove_json remove_csv current_state
+  labels_before=$(labels_from_raw "$raw") || return 1
   current_state=$(jq -r '.state' <<< "$raw")
   if [ "$action" = close ]; then
     remove_json=$(labels_json "${FM_FORGE_WORKFLOW_LABELS[@]}")
     remove_csv=$(labels_csv "${FM_FORGE_WORKFLOW_LABELS[@]}")
-    expected=$(expected_labels "$raw" '[]' "$remove_json") \
-      || fail "issue labels are malformed"
+    expected=$(expected_labels "$raw" '[]' "$remove_json") || return 1
   else
     remove_csv=''
     expected=$labels_before
   fi
+  jq -cn --argjson expected "$expected" --arg action "$action" --arg current "$current_state" \
+    --arg desired "$desired" --arg remove "$remove_csv" '
+      {expected:$expected,payload:
+        ((if $current == $desired then {} else {state_event:$action} end)
+        + (if ($remove | length) == 0 then {} else {remove_labels:$remove} end))}'
+}
+
+cmd_issue_state() {
+  local action=$1 repo=$2 target=$3 desired raw plan expected current_state payload verified
+  case "$action" in close) desired=closed ;; reopen) desired=opened ;; *) return 1 ;; esac
+  prepare_issue_mutation "$repo" "$target"
+  raw=$FM_GITLAB_ISSUE_RAW
+  require_self_owner "$raw"
+  current_state=$(jq -r '.state' <<< "$raw")
+  plan=$(state_convergence_plan "$raw" "$action" "$desired") \
+    || fail "issue labels are malformed"
+  expected=$(jq -c '.expected' <<< "$plan")
   if [ "$current_state" = "$desired" ] && labels_match "$raw" "$expected"; then
     emit_issue "$raw"
     return 0
   fi
-  payload=$(jq -cn --arg action "$action" --arg current "$current_state" \
-    --arg desired "$desired" --arg remove "$remove_csv" '
-      (if $current == $desired then {} else {state_event:$action} end)
-      + (if ($remove | length) == 0 then {} else {remove_labels:$remove} end)')
+  payload=$(jq -c '.payload' <<< "$plan")
   issue_update "$FM_FORGE_ISSUE_IID" "$payload" || fail "issue $action failed"
   verified=$(checked_issue_raw "$FM_FORGE_ISSUE_IID") || fail "issue $action read-back failed"
   require_self_owner "$verified"
@@ -1533,8 +1549,8 @@ cmd_mr_note() {
 }
 
 cmd_mr_state() {
-  local action=$1 repo=$2 target=$3 expected_target='' desired raw sha labels_before expected
-  local remove_json remove_csv current_state owners_before payload verified
+  local action=$1 repo=$2 target=$3 expected_target='' desired raw sha plan expected
+  local current_state owners_before payload verified
   shift 3
   case "$action" in close) desired=closed ;; reopen) desired=opened ;; *) return 1 ;; esac
   while [ "$#" -gt 0 ]; do
@@ -1550,26 +1566,16 @@ cmd_mr_state() {
   current_state=$(jq -r '.state' <<< "$raw")
   [ "$current_state" != merged ] || fail "merged merge requests cannot change lifecycle state"
   sha=$(jq -r '.sha' <<< "$raw")
-  labels_before=$(labels_from_raw "$raw") || fail "merge-request labels are malformed"
   owners_before=$(jq -c '[.assignees[] | {id,username}] | sort_by(.id,.username)' <<< "$raw") \
     || fail "merge-request assignees are malformed"
-  if [ "$action" = close ]; then
-    remove_json=$(labels_json "${FM_FORGE_WORKFLOW_LABELS[@]}")
-    remove_csv=$(labels_csv "${FM_FORGE_WORKFLOW_LABELS[@]}")
-    expected=$(expected_labels "$raw" '[]' "$remove_json") \
-      || fail "merge-request labels are malformed"
-  else
-    remove_csv=''
-    expected=$labels_before
-  fi
+  plan=$(state_convergence_plan "$raw" "$action" "$desired") \
+    || fail "merge-request labels are malformed"
+  expected=$(jq -c '.expected' <<< "$plan")
   if [ "$current_state" = "$desired" ] && labels_match "$raw" "$expected"; then
     emit_mr "$raw"
     return 0
   fi
-  payload=$(jq -cn --arg action "$action" --arg current "$current_state" \
-    --arg desired "$desired" --arg remove "$remove_csv" '
-      (if $current == $desired then {} else {state_event:$action} end)
-      + (if ($remove | length) == 0 then {} else {remove_labels:$remove} end)')
+  payload=$(jq -c '.payload' <<< "$plan")
   mr_update "$FM_FORGE_MR_IID" "$payload" || fail "merge-request $action failed"
   verified=$(refresh_mr_after_mutation "$FM_FORGE_MR_IID" "$sha") \
     || fail "merge-request $action read-back failed"
