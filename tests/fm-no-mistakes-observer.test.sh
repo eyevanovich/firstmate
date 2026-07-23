@@ -645,6 +645,37 @@ EOF
   pass "authoritative record reconciles interrupted generation publication"
 }
 
+test_pristine_record_only_cleanup_avoids_terminal_calls() {
+  local vals home repo branch record generation target
+  reset_fakes
+  vals=$(make_home pristine-record-cleanup claude tmux)
+  IFS=$'\t' read -r home repo branch <<EOF
+$vals
+EOF
+  write_nm run-pristine-record "$branch" running
+  run_observer "$home" open task --run run-pristine-record >/dev/null
+  record="$home/state/task.observer"
+  generation="$home/state/.task.observer-$(record_value "$record" token)"
+  target=$(record_value "$record" observer_target)
+  rm -f "$FM_TEST_TMUX_STATE/$target"
+  rmdir "$generation"
+  sed -e 's/^status=ready$/status=creating/' \
+    -e 's/^observer_target=.*/observer_target=/' \
+    -e 's/^observer_session=.*/observer_session=/' \
+    -e 's/^observer_workspace_id=.*/observer_workspace_id=/' \
+    -e 's/^observer_tab_id=.*/observer_tab_id=/' \
+    -e 's/^observer_pane_id=.*/observer_pane_id=/' "$record" > "$record.tmp"
+  chmod 600 "$record.tmp"
+  mv "$record.tmp" "$record"
+  write_nm run-pristine-record "$branch" completed
+  : > "$FM_TEST_TMUX_LOG"
+  run_observer "$home" cleanup task >/dev/null
+  assert_absent "$record" "pristine record-only cleanup preserved the observer record"
+  [ ! -s "$FM_TEST_TMUX_LOG" ] || fail "pristine record-only cleanup issued a terminal command"
+  git -C "$TMP_ROOT/pristine-record-cleanup-base" worktree remove --force "$repo" >/dev/null
+  pass "pristine record-only cleanup avoids terminal reconciliation"
+}
+
 test_herdr_timeout_falls_back_without_touching_worker() {
   local vals home repo branch out started elapsed
   reset_fakes
@@ -846,6 +877,7 @@ test_cleanup_identity_mismatch_refuses
 test_unreadable_identity_refuses_cleanup
 test_interrupted_creates_reconcile_without_duplicates
 test_record_only_generation_reconciles
+test_pristine_record_only_cleanup_avoids_terminal_calls
 test_herdr_timeout_falls_back_without_touching_worker
 test_herdr_submit_phases_reconcile_without_duplicate_text
 test_tmux_unclaimed_ready_tombstones_after_lock_release

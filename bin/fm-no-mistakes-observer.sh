@@ -987,6 +987,15 @@ open_action() {  # <allow-reopen:0|1> [run-id]
   observer_open_run "$NM_ID" "$allow_reopen"
 }
 
+observer_pristine_creating() {
+  [ "$R_STATUS" = creating ] \
+    && [ -z "$R_OBSERVER_TARGET" ] \
+    && [ -z "$R_OBSERVER_SESSION" ] \
+    && [ -z "$R_OBSERVER_WORKSPACE_ID" ] \
+    && [ -z "$R_OBSERVER_TAB_ID" ] \
+    && [ -z "$R_OBSERVER_PANE_ID" ]
+}
+
 cleanup_action() {
   RECORD="$STATE/$ID.observer"
   [ -e "$RECORD" ] || [ -L "$RECORD" ] || return 0
@@ -995,6 +1004,13 @@ cleanup_action() {
   if ! nm_status_terminal "$R_RUN"; then
     echo "error: no-mistakes run $R_RUN is still running or unreadable; preserving its observer and task" >&2
     return 1
+  fi
+  if observer_pristine_creating; then
+    generation_remove "$ID" "$R_TOKEN" \
+      || { echo "error: failed to remove pristine observer generation state for task $ID run $R_RUN" >&2; return 1; }
+    rm -f "$RECORD"
+    printf 'observer: cleaned unlaunched task %s run %s\n' "$ID" "$R_RUN"
+    return 0
   fi
   observer_close_exact \
     || { echo "error: failed to close exact observer for task $ID run $R_RUN" >&2; return 1; }
