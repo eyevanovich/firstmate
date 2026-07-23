@@ -289,12 +289,16 @@ if [ "${1:-}" = api ]; then
       else
         note=$(note_object Issue 7 501 9007 "$(jq -c '.body' <<< "$input")")
       fi
+      [ "${FM_FAKE_CREATED_NOTE_ID:-valid}" = valid ] || note=$(jq -c '.id=0' <<< "$note")
       jq -cn --argjson note "$note" '[$note]' > "$FM_FAKE_ISSUE_NOTES_FILE"
       printf '%s\n' "$note"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/issues/*/notes/501)
       note=$(jq -c '.[0]' "$FM_FAKE_ISSUE_NOTES_FILE")
-      [ "${FM_FAKE_VERIFY_MISMATCH:-}" != note ] || note=$(jq '.author.id=77' <<< "$note")
+      case "${FM_FAKE_VERIFY_MISMATCH:-}" in
+        note) note=$(jq '.author.id=77' <<< "$note") ;;
+        note-id) note=$(jq '.id=502' <<< "$note") ;;
+      esac
       printf '%s\n' "$note"
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests/5)
@@ -411,6 +415,96 @@ test_live_work_item_note_shape_is_verified_and_idempotent() {
   pass "live work-item note shape verifies exact resource and suppresses duplicates"
 }
 
+test_note_matching_uses_one_strict_endpoint_scoped_identity() {
+  local note issue_note mr_note out
+  reset_case
+  note="$REPO/adversarial-note.md"
+  jq -j '.body' "$WORK_ITEM_NOTE_FIXTURE" > "$note"
+  jq -c '[
+      (. | .id=101 | .project_id=999),
+      (. | .id=102 | .author.id=77),
+      (. | .id=103 | .author.username="rival"),
+      (. | .id=104 | .noteable_type="MergeRequest" | .noteable_iid=7),
+      (. | .id=105 | .body="untrusted secret body"),
+      (. | .id=106 | .system=true),
+      (. | .id=0),
+      (. | .id=108 | .noteable_id="opaque"),
+      (. | .id=109 | .noteable_type="Issue" | .noteable_id=9007 | .noteable_iid=8),
+      .
+    ]' "$WORK_ITEM_NOTE_FIXTURE" > "$ISSUE_NOTES"
+  out=$(run_adapter issue-note "$REPO" 7 --body-file "$note") \
+    || fail "exact work-item note after mismatched candidates should be reused"
+  jq -e '.note.already == true and .note.id == 501' <<< "$out" >/dev/null \
+    || fail "work-item matching reused a mismatched candidate"
+  [ "$(count_log '/issues/7/notes --hostname.*--method POST')" -eq 0 ] \
+    || fail "exact work-item candidate was duplicated"
+
+  reset_case
+  printf 'Legacy issue note.\n' > "$note"
+  issue_note=$(jq -cn --rawfile body "$note" '
+    {id:551,body:$body,author:{id:42,username:"mate"},system:false,
+     noteable_id:9007,noteable_type:"Issue",project_id:314,noteable_iid:7}')
+  jq -cn --argjson exact "$issue_note" '[
+    ($exact | .id=549 | .noteable_iid=8),
+    ($exact | .id=550 | .noteable_id=77146),
+    $exact
+  ]' > "$ISSUE_NOTES"
+  out=$(run_adapter issue-note "$REPO" 7 --body-file "$note") \
+    || fail "legacy issue note should retain comparable identity checks"
+  jq -e '.note.already == true and .note.id == 551' <<< "$out" >/dev/null \
+    || fail "legacy issue matching ignored its internal ID or IID"
+
+  reset_case
+  printf 'Legacy MR note.\n' > "$note"
+  mr_note=$(jq -cn --rawfile body "$note" '
+    {id:651,body:$body,author:{id:42,username:"mate"},system:false,
+     noteable_id:8005,noteable_type:"MergeRequest",project_id:314,noteable_iid:5}')
+  jq -cn --argjson exact "$mr_note" '[
+    ($exact | .id=649 | .noteable_type="WorkItem" | .noteable_iid=null),
+    ($exact | .id=650 | .noteable_iid=6),
+    $exact
+  ]' > "$MR_NOTES"
+  out=$(run_adapter mr-note "$REPO" 5 --body-file "$note") \
+    || fail "merge-request note should retain comparable identity checks"
+  jq -e '.note.already == true and .note.id == 651' <<< "$out" >/dev/null \
+    || fail "merge-request matching ignored endpoint type or IID"
+  pass "note list matching and read-back share strict endpoint-scoped identity"
+}
+
+test_malformed_created_note_id_is_rejected() {
+  local note out rc
+  reset_case
+  note="$REPO/malformed-created-note.md"
+  printf 'Malformed created note.\n' > "$note"
+  out=$(FM_FAKE_CREATED_NOTE_ID=malformed run_adapter issue-note "$REPO" 7 \
+    --body-file "$note" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "malformed created note ID"
+  assert_contains "$out" "created note ID unavailable" "malformed created note diagnostic"
+  pass "malformed created note IDs cannot pass read-back verification"
+}
+
+test_malformed_matching_note_id_is_rejected_without_posting() {
+  local note out rc
+  reset_case
+  note="$REPO/malformed-existing-note.md"
+  printf 'Malformed existing note.\n' > "$note"
+  jq -cn --rawfile body "$note" '
+    [{id:0,body:$body,author:{id:42,username:"mate"},system:false,
+      noteable_id:77146,noteable_type:"WorkItem",project_id:314,noteable_iid:null}]' \
+    > "$ISSUE_NOTES"
+  out=$(run_adapter issue-note "$REPO" 7 --body-file "$note" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "malformed matching note ID"
+  assert_contains "$out" "existing note identity mismatch (id)" \
+    "malformed matching note diagnostic"
+  assert_not_contains "$out" "Malformed existing note." \
+    "malformed matching note diagnostic leaked body"
+  [ "$(count_log '/issues/7/notes --hostname.*--method POST')" -eq 0 ] \
+    || fail "malformed matching note ID allowed a duplicate post"
+  pass "malformed matching note IDs fail closed without duplicate posts"
+}
+
 test_issue_create_claim_and_canonical_view() {
   local body out
   reset_case
@@ -464,11 +558,13 @@ test_issue_claim_status_note_close_reopen_and_release() {
     || fail "issue note retry posted more than once"
 
   out=$(run_adapter issue-close "$REPO" 7) || fail "issue close should succeed"
-  [ "$(jq -r '.issue.state' <<< "$out")" = closed ] || fail "issue did not close"
-  before=$(count_log 'input={"state_event":"close"}')
+  jq -e '.issue.state == "closed" and .issue.labels == ["bug"]
+    and .issue.assignees == ["mate"]' <<< "$out" >/dev/null \
+    || fail "issue close did not clear workflow labels while preserving metadata"
+  before=$(count_log '"state_event":"close"')
   run_adapter issue-close "$REPO" 7 >/dev/null || fail "already-closed issue should be idempotent"
-  [ "$(count_log 'input={"state_event":"close"}')" -eq "$before" ] \
-    || fail "already-closed issue was mutated again"
+  [ "$(count_log '"state_event":"close"')" -eq "$before" ] \
+    || fail "already-closed issue repeated its state transition"
   out=$(run_adapter issue-reopen "$REPO" 7) || fail "issue reopen should succeed"
   [ "$(jq -r '.issue.state' <<< "$out")" = opened ] || fail "issue did not reopen"
 
@@ -481,6 +577,42 @@ test_issue_claim_status_note_close_reopen_and_release() {
   [ "$(count_log 'input={"assignee_ids":\[\]')" -eq "$before" ] \
     || fail "already-released issue was mutated again"
   pass "issue claim, status, note, close, reopen, and release converge safely"
+}
+
+test_close_retry_cleans_workflow_labels_without_repeating_transition() {
+  local out before
+  reset_case
+  out=$(FM_FAKE_ISSUE_STATE=closed \
+    FM_FAKE_ISSUE_LABELS='["bug","status::in-progress","status::blocked"]' \
+    run_adapter issue-close "$REPO" 7) \
+    || fail "issue close retry should clean a partially landed close"
+  jq -e '.issue.state == "closed" and .issue.labels == ["bug"]
+    and .issue.assignees == ["mate"]' <<< "$out" >/dev/null \
+    || fail "issue close retry did not preserve owner and unrelated labels"
+  assert_no_grep '"state_event":"close"' "$LOG" \
+    "issue close retry repeated an already-landed state transition"
+  before=$(count_log '--method PUT')
+  run_adapter issue-close "$REPO" 7 >/dev/null \
+    || fail "fully converged issue close retry should succeed"
+  [ "$(count_log '--method PUT')" -eq "$before" ] \
+    || fail "fully converged issue close retry mutated again"
+
+  reset_case
+  out=$(FM_FAKE_MR_STATE=closed \
+    FM_FAKE_MR_LABELS='["backend","status::deferred","ready-for-agent"]' \
+    run_adapter mr-close "$REPO" 5) \
+    || fail "merge-request close retry should clean a partially landed close"
+  jq -e '.mr.state == "closed" and .mr.labels == ["backend"]
+    and .mr.assignees == []' <<< "$out" >/dev/null \
+    || fail "merge-request close retry did not preserve assignees and unrelated labels"
+  assert_no_grep '"state_event":"close"' "$LOG" \
+    "merge-request close retry repeated an already-landed state transition"
+  before=$(count_log '--method PUT')
+  run_adapter mr-close "$REPO" 5 >/dev/null \
+    || fail "fully converged merge-request close retry should succeed"
+  [ "$(count_log '--method PUT')" -eq "$before" ] \
+    || fail "fully converged merge-request close retry mutated again"
+  pass "close retries remove workflow labels without repeating landed transitions"
 }
 
 test_issue_already_correct_and_custom_labels_are_idempotent() {
@@ -666,7 +798,17 @@ test_post_mutation_verification_mismatch_is_reported() {
     --body-file "$REPO/verify-note.md" 2>&1)
   rc=$?
   expect_code 1 "$rc" "issue note verification mismatch"
-  assert_contains "$out" "note verification mismatch" "note verification mismatch report"
+  assert_contains "$out" "note verification mismatch (author.id)" \
+    "note verification mismatch field report"
+  assert_not_contains "$out" "Verify note." "note mismatch leaked untrusted body"
+
+  reset_case
+  out=$(FM_FAKE_VERIFY_MISMATCH=note-id run_adapter issue-note "$REPO" 7 \
+    --body-file "$REPO/verify-note.md" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "issue note read-back ID mismatch"
+  assert_contains "$out" "note verification mismatch (id)" \
+    "note read-back ID mismatch field report"
   pass "issue and note mutations require deterministic matching read-back"
 }
 
@@ -709,7 +851,8 @@ test_merge_request_metadata_lifecycle_and_notes() {
     "$LOG" "merge-request note pagination"
 
   out=$(run_adapter mr-close "$REPO" 5) || fail "merge-request close should succeed"
-  [ "$(jq -r '.mr.state' <<< "$out")" = closed ] || fail "merge request did not close"
+  jq -e '.mr.state == "closed" and .mr.labels == ["docs"]' <<< "$out" >/dev/null \
+    || fail "merge-request close did not clear workflow labels"
   out=$(run_adapter mr-reopen "$REPO" 5) || fail "merge-request reopen should succeed"
   [ "$(jq -r '.mr.state' <<< "$out")" = opened ] || fail "merge request did not reopen"
   out=$(run_adapter mr-release "$REPO" 5 --status ready) \
@@ -796,8 +939,12 @@ test_issue_create_and_note_failures_are_verified() {
 
 test_live_415_regression_claim_uses_json_media_type
 test_live_work_item_note_shape_is_verified_and_idempotent
+test_note_matching_uses_one_strict_endpoint_scoped_identity
+test_malformed_created_note_id_is_rejected
+test_malformed_matching_note_id_is_rejected_without_posting
 test_issue_create_claim_and_canonical_view
 test_issue_claim_status_note_close_reopen_and_release
+test_close_retry_cleans_workflow_labels_without_repeating_transition
 test_issue_already_correct_and_custom_labels_are_idempotent
 test_issue_release_ready_preserves_unrelated_labels
 test_issue_ownership_conflicts_stop_before_mutation
