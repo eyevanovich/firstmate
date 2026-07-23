@@ -544,14 +544,16 @@ issue_update() {
 }
 
 note_identity_valid() {
-  local raw=$1 iid=$2 type=$3 body_json=$4
-  jq -e --argjson iid "$iid" --argjson project_id "$FM_GITLAB_PROJECT_ID" \
-    --argjson user_id "$FM_GITLAB_USER_ID" --arg username "$FM_GITLAB_USERNAME" \
-    --arg type "$type" --argjson body "$body_json" '
+  local raw=$1 iid=$2 noteable_id=$3 types=$4 body_json=$5
+  jq -e --argjson iid "$iid" --argjson noteable_id "$noteable_id" \
+    --argjson project_id "$FM_GITLAB_PROJECT_ID" --argjson user_id "$FM_GITLAB_USER_ID" \
+    --arg username "$FM_GITLAB_USERNAME" --argjson types "$types" --argjson body "$body_json" '
       (.id | type) == "number" and .id > 0 and .id == (.id | floor)
       and .project_id == $project_id
-      and .noteable_iid == $iid
-      and .noteable_type == $type
+      and .noteable_id == $noteable_id
+      and (.noteable_type as $actual | any($types[]; . == $actual))
+      and (if .noteable_type == "WorkItem" then .noteable_iid == null
+        else .noteable_iid == $iid end)
       and .body == $body
       and .system == false
       and .author.id == $user_id
@@ -568,25 +570,28 @@ emit_note() {
 }
 
 post_note() {
-  local kind=$1 iid=$2 body_json=$3 pid endpoint type notes existing created note_id verified
+  local kind=$1 iid=$2 noteable_id=$3 body_json=$4 pid endpoint types notes existing created note_id verified
   pid=$(project_id) || return 1
   case "$kind" in
-    issue) endpoint="issues/$iid"; type=Issue ;;
-    mr) endpoint="merge_requests/$iid"; type=MergeRequest ;;
+    issue) endpoint="issues/$iid"; types='["Issue","WorkItem"]' ;;
+    mr) endpoint="merge_requests/$iid"; types='["MergeRequest"]' ;;
     *) return 1 ;;
   esac
   notes=$(gitlab_api "projects/$pid/$endpoint/notes?sort=desc&order_by=created_at&per_page=100" \
     --paginate) || return 1
   jq -e 'type == "array"' <<< "$notes" >/dev/null 2>&1 || fail "$kind note list is malformed"
-  existing=$(jq -c --argjson iid "$iid" --argjson project_id "$FM_GITLAB_PROJECT_ID" \
-      --argjson user_id "$FM_GITLAB_USER_ID" --arg username "$FM_GITLAB_USERNAME" \
-      --arg type "$type" --argjson body "$body_json" '
-        [.[] | select(.project_id == $project_id and .noteable_iid == $iid
-          and .noteable_type == $type and .body == $body and .system == false
+  existing=$(jq -c --argjson iid "$iid" --argjson noteable_id "$noteable_id" \
+      --argjson project_id "$FM_GITLAB_PROJECT_ID" --argjson user_id "$FM_GITLAB_USER_ID" \
+      --arg username "$FM_GITLAB_USERNAME" --argjson types "$types" --argjson body "$body_json" '
+        [.[] | select(.project_id == $project_id and .noteable_id == $noteable_id
+          and (.noteable_type as $actual | any($types[]; . == $actual))
+          and (if .noteable_type == "WorkItem" then .noteable_iid == null
+            else .noteable_iid == $iid end)
+          and .body == $body and .system == false
           and .author.id == $user_id and .author.username == $username)] | first // empty
       ' <<< "$notes")
   if [ -n "$existing" ]; then
-    note_identity_valid "$existing" "$iid" "$type" "$body_json" \
+    note_identity_valid "$existing" "$iid" "$noteable_id" "$types" "$body_json" \
       || fail "$kind existing note identity could not be verified"
     emit_note "$kind" "$existing" true
     return 0
@@ -596,8 +601,8 @@ post_note() {
   note_id=$(jq -er '.id | numbers | select(. > 0 and floor == .)' <<< "$created") \
     || fail "$kind created note ID unavailable"
   verified=$(gitlab_api "projects/$pid/$endpoint/notes/$note_id") || return 1
-  note_identity_valid "$verified" "$iid" "$type" "$body_json" \
-    || fail "$kind note verification mismatch"
+  note_identity_valid "$verified" "$iid" "$noteable_id" "$types" "$body_json" \
+    || fail "$kind note verification mismatch (resource, author, body, or note type)"
   emit_note "$kind" "$verified" false
 }
 
@@ -1061,7 +1066,7 @@ cmd_issue_labels() {
 }
 
 cmd_issue_note() {
-  local repo=$1 target=$2 body_file='' raw
+  local repo=$1 target=$2 body_file='' raw noteable_id
   shift 2
   [ "$#" -eq 2 ] && [ "$1" = --body-file ] || usage "issue-note requires --body-file"
   body_file=$2
@@ -1070,7 +1075,9 @@ cmd_issue_note() {
   prepare_issue_mutation "$repo" "$target"
   raw=$FM_GITLAB_ISSUE_RAW
   require_self_owner "$raw"
-  post_note issue "$FM_FORGE_ISSUE_IID" "$FM_GITLAB_BODY_JSON" \
+  noteable_id=$(jq -er '.id | numbers | select(. > 0 and floor == .)' <<< "$raw") \
+    || fail "issue noteable identity is unavailable"
+  post_note issue "$FM_FORGE_ISSUE_IID" "$noteable_id" "$FM_GITLAB_BODY_JSON" \
     || fail "issue note failed"
 }
 
@@ -1458,7 +1465,7 @@ cmd_mr_labels() {
 }
 
 cmd_mr_note() {
-  local repo=$1 target=$2 expected_target='' body_file='' raw sha note_output verified
+  local repo=$1 target=$2 expected_target='' body_file='' raw sha noteable_id note_output verified
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1477,7 +1484,9 @@ cmd_mr_note() {
   raw=$FM_GITLAB_MR_RAW
   jq -e '.state == "opened"' <<< "$raw" >/dev/null || fail "only an open merge request can receive a worker note"
   sha=$(jq -r '.sha' <<< "$raw")
-  note_output=$(post_note mr "$FM_FORGE_MR_IID" "$FM_GITLAB_BODY_JSON") \
+  noteable_id=$(jq -er '.id | numbers | select(. > 0 and floor == .)' <<< "$raw") \
+    || fail "merge-request noteable identity is unavailable"
+  note_output=$(post_note mr "$FM_FORGE_MR_IID" "$noteable_id" "$FM_GITLAB_BODY_JSON") \
     || fail "merge-request note failed"
   verified=$(refresh_mr_after_mutation "$FM_FORGE_MR_IID" "$sha") \
     || fail "merge-request changed while note was posted"
