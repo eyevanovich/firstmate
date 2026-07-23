@@ -16,6 +16,9 @@
 # source branch, and the trusted project's target branch before any action.
 # MR mutations additionally require the authenticated user to be the author and
 # preserve the source head SHA; merge remains exclusively guarded as below.
+# MR creation and reuse verify the exact requested metadata and the MR-specific
+# source-branch removal intent; project removal policy and defaults are not substitutes.
+# Verification failures report only mismatched field names.
 # Body and note files must be regular non-symlink files inside the worktree.
 # JSON mutations use glab api --input - with Content-Type: application/json;
 # --input sends raw bytes and does not infer that media type itself.
