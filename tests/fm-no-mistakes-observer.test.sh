@@ -611,7 +611,7 @@ EOF
 }
 
 test_herdr_submit_phases_reconcile_without_duplicate_text() {
-  local vals home repo branch record out
+  local vals home repo branch record out token
   reset_fakes
   vals=$(make_home herdr-submit-phases claude herdr)
   IFS=$'\t' read -r home repo branch <<EOF
@@ -627,6 +627,17 @@ EOF
   [ "$(record_value "$record" status)" = submitted ] || fail "submitted retry replaced the pending observer state"
   assert_no_grep $'pane\037send-text' "$FM_TEST_HERDR_LOG" "submitted retry typed the attach command twice"
   assert_no_grep $'pane\037send-keys' "$FM_TEST_HERDR_LOG" "submitted retry pressed Enter twice"
+
+  token=$(record_value "$record" token)
+  mkdir "$home/state/.task.observer.lock"
+  printf '99999999\n' > "$home/state/.task.observer.lock/pid"
+  : > "$FM_TEST_HERDR_LOG"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_NM_OBSERVER_NO_MISTAKES="$FAKEBIN/no-mistakes" "$SCRIPT" _session task run-herdr-phases "$token"
+  [ "$(record_value "$record" status)" = detached ] || fail "unclaimed submitted observer was not tombstoned"
+  assert_no_grep $'pane\037send-text' "$FM_TEST_HERDR_LOG" "claim timeout typed the attach command again"
+  assert_no_grep $'pane\037send-keys' "$FM_TEST_HERDR_LOG" "claim timeout pressed Enter again"
+  run_observer "$home" reopen task --run run-herdr-phases >/dev/null
 
   sed 's/^status=submitted$/status=staged/' "$record" > "$record.tmp"
   chmod 600 "$record.tmp"

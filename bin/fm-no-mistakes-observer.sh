@@ -906,6 +906,18 @@ session_action() {  # internal: <task-id> <run-id> <token>
     fi
     sleep 0.1
   done
+  if lock_acquire "$id"; then
+    if record_load "$record" \
+       && [ "$R_TASK" = "$id" ] \
+       && [ "$R_RUN" = "$run" ] \
+       && [ "$R_TOKEN" = "$token" ] \
+       && [ "$R_STATUS" = submitted ]; then
+      R_STATUS=detached
+      R_EXIT_CODE=
+      record_write "$record" || true
+    fi
+    lock_release
+  fi
   exit 0
 }
 
