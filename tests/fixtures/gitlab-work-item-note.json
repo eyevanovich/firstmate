@@ -1,0 +1,16 @@
+{
+  "id": 501,
+  "body": "Live work-item note.\nSecond line: \"quoted\" & UTF-8 café.\n",
+  "author": {
+    "id": 42,
+    "username": "mate"
+  },
+  "system": false,
+  "noteable_id": 9007,
+  "noteable_type": "WorkItem",
+  "project_id": 314,
+  "noteable_iid": null,
+  "resolvable": false,
+  "confidential": false,
+  "internal": false
+}

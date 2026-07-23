@@ -17,6 +17,7 @@ ISSUE_STATE="$TMP/issue.json"
 MR_STATE="$TMP/mr.json"
 ISSUE_NOTES="$TMP/issue-notes.json"
 MR_NOTES="$TMP/mr-notes.json"
+WORK_ITEM_NOTE_FIXTURE="$ROOT/tests/fixtures/gitlab-work-item-note.json"
 MUTATED="$TMP/mutated"
 
 fm_git_init_commit "$REPO"
@@ -52,7 +53,7 @@ issue_default() {
   esac
   jq -cn --argjson iid "$iid" --arg state "$state" --arg description "$description" \
     --argjson labels "$labels" --argjson assignees "$owner" '
-      {iid:$iid,project_id:314,title:"Fix cutter",state:$state,
+      {id:9007,iid:$iid,project_id:314,title:"Fix cutter",state:$state,
        web_url:("https://gitlab.com/kisscut-museum/kisscut-platform/-/work_items/" + ($iid|tostring)),
        description:$description,labels:$labels,author:{id:7,username:"ivan"},
        assignees:$assignees,updated_at:"2026-07-18T00:00:00Z"}'
@@ -109,7 +110,7 @@ mr_default() {
   esac
   jq -cn --arg state "$state" --arg source "$source" --arg target "$target" \
     --argjson labels "$labels" --argjson assignees "$owner" --argjson author "$author" '
-      {iid:5,project_id:314,source_project_id:314,target_project_id:314,
+      {id:8005,iid:5,project_id:314,source_project_id:314,target_project_id:314,
        title:"Ship fix",state:$state,
        web_url:"https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/5",
        source_branch:$source,target_branch:$target,draft:false,
@@ -162,11 +163,11 @@ labels_catalog() {
 }
 
 note_object() {
-  local type=$1 iid=$2 note_id=$3 body_json=$4
+  local type=$1 iid=$2 note_id=$3 noteable_id=$4 body_json=$5
   jq -cn --arg type "$type" --argjson iid "$iid" --argjson id "$note_id" \
-    --argjson body "$body_json" '
+    --argjson noteable_id "$noteable_id" --argjson body "$body_json" '
       {id:$id,body:$body,author:{id:42,username:"mate"},system:false,
-       noteable_id:99,noteable_type:$type,project_id:314,noteable_iid:$iid,
+       noteable_id:$noteable_id,noteable_type:$type,project_id:314,noteable_iid:$iid,
        resolvable:false,confidential:false,internal:false}'
 }
 
@@ -283,7 +284,11 @@ if [ "${1:-}" = api ]; then
       [ "${FM_FAKE_API_FAIL:-}" != issue-note ] || exit 56
       jq -e 'keys == ["body"] and (.body | type) == "string"' \
         <<< "$input" >/dev/null || exit 62
-      note=$(note_object Issue 7 501 "$(jq -c '.body' <<< "$input")")
+      if [ "${FM_FAKE_NOTE_SHAPE:-}" = work-item ]; then
+        note=$(jq -c '.' "$FM_FAKE_WORK_ITEM_NOTE_FIXTURE")
+      else
+        note=$(note_object Issue 7 501 9007 "$(jq -c '.body' <<< "$input")")
+      fi
       jq -cn --argjson note "$note" '[$note]' > "$FM_FAKE_ISSUE_NOTES_FILE"
       printf '%s\n' "$note"
       ;;
@@ -319,7 +324,7 @@ if [ "${1:-}" = api ]; then
       [ "${FM_FAKE_API_FAIL:-}" != mr-note ] || exit 59
       jq -e 'keys == ["body"] and (.body | type) == "string"' \
         <<< "$input" >/dev/null || exit 62
-      note=$(note_object MergeRequest 5 601 "$(jq -c '.body' <<< "$input")")
+      note=$(note_object MergeRequest 5 601 8005 "$(jq -c '.body' <<< "$input")")
       jq -cn --argjson note "$note" '[$note]' > "$FM_FAKE_MR_NOTES_FILE"
       printf '%s\n' "$note"
       ;;
@@ -348,6 +353,7 @@ run_adapter() {
     FM_FAKE_MR_STATE_FILE="$MR_STATE" \
     FM_FAKE_ISSUE_NOTES_FILE="$ISSUE_NOTES" \
     FM_FAKE_MR_NOTES_FILE="$MR_NOTES" \
+    FM_FAKE_WORK_ITEM_NOTE_FIXTURE="$WORK_ITEM_NOTE_FIXTURE" \
     FM_FAKE_MUTATED_MARKER="$MUTATED" \
     FM_FORGE_HOSTS_FILE="${FM_FORGE_HOSTS_FILE:-}" \
     GITLAB_TOKEN=AMBIENT GITLAB_ACCESS_TOKEN=AMBIENT OAUTH_TOKEN=AMBIENT \
@@ -377,6 +383,32 @@ test_live_415_regression_claim_uses_json_media_type() {
     "$LOG" "issue claim JSON media type"
   assert_grep 'input={"assignee_ids":[42]' "$LOG" "issue claim array encoding"
   pass "issue claim sends explicit JSON media type and preserves array encoding"
+}
+
+test_live_work_item_note_shape_is_verified_and_idempotent() {
+  local note out rendered
+  reset_case
+  note="$REPO/work-item-note.md"
+  rendered="$TMP/rendered-work-item-note.md"
+  jq -j '.body' "$WORK_ITEM_NOTE_FIXTURE" > "$note"
+
+  out=$(FM_FAKE_NOTE_SHAPE=work-item run_adapter issue-note "$REPO" 7 --body-file "$note") \
+    || fail "live work-item note response should verify"
+  [ "$(jq -r '.note.already' <<< "$out")" = false ] \
+    || fail "first work-item note reported reuse"
+  jq -j '.note.body' <<< "$out" > "$rendered"
+  cmp -s "$note" "$rendered" || fail "work-item note body encoding changed"
+
+  out=$(FM_FAKE_NOTE_SHAPE=work-item run_adapter issue-note "$REPO" 7 --body-file "$note") \
+    || fail "existing work-item note should verify"
+  [ "$(jq -r '.note.already' <<< "$out")" = true ] \
+    || fail "existing work-item note was not reused"
+  [ "$(count_log '/issues/7/notes --hostname.*--method POST')" -eq 1 ] \
+    || fail "work-item note retry posted a duplicate"
+  assert_grep \
+    'issues/7/notes?sort=desc&order_by=created_at&per_page=100 --hostname gitlab.com --paginate' \
+    "$LOG" "issue note pagination"
+  pass "live work-item note shape verifies exact resource and suppresses duplicates"
 }
 
 test_issue_create_claim_and_canonical_view() {
@@ -670,6 +702,11 @@ test_merge_request_metadata_lifecycle_and_notes() {
   out=$(run_adapter mr-note "$REPO" 5 --body-file "$REPO/mr-note.md") \
     || fail "merge-request note retry should succeed"
   [ "$(jq -r '.note.already' <<< "$out")" = true ] || fail "MR note retry duplicated content"
+  [ "$(count_log '/merge_requests/5/notes --hostname.*--method POST')" -eq 1 ] \
+    || fail "MR note retry posted more than once"
+  assert_grep \
+    'merge_requests/5/notes?sort=desc&order_by=created_at&per_page=100 --hostname gitlab.com --paginate' \
+    "$LOG" "merge-request note pagination"
 
   out=$(run_adapter mr-close "$REPO" 5) || fail "merge-request close should succeed"
   [ "$(jq -r '.mr.state' <<< "$out")" = closed ] || fail "merge request did not close"
@@ -758,6 +795,7 @@ test_issue_create_and_note_failures_are_verified() {
 }
 
 test_live_415_regression_claim_uses_json_media_type
+test_live_work_item_note_shape_is_verified_and_idempotent
 test_issue_create_claim_and_canonical_view
 test_issue_claim_status_note_close_reopen_and_release
 test_issue_already_correct_and_custom_labels_are_idempotent
