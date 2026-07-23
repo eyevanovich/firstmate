@@ -279,6 +279,75 @@ record_write() {  # <path>; globals R_*
   mv -f "$tmp" "$path"
 }
 
+pending_load() {  # <path>
+  local path=$1 line key value seen='|' mode
+  P_TASK= P_RUN= P_TOKEN= P_EXIT_CODE=
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  mode=$(record_mode "$path") || return 1
+  [ "$mode" = 600 ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *=*) ;; *) return 1 ;; esac
+    key=${line%%=*}
+    value=${line#*=}
+    case "$seen" in *"|$key|"*) return 1 ;; esac
+    seen="$seen$key|"
+    case "$key" in
+      task) P_TASK=$value ;;
+      run) P_RUN=$value ;;
+      token) P_TOKEN=$value ;;
+      exit_code) P_EXIT_CODE=$value ;;
+      *) return 1 ;;
+    esac
+  done < "$path"
+  observer_id_valid "$P_TASK" || return 1
+  run_id_valid "$P_RUN" || return 1
+  case "$P_TOKEN" in ''|*[!A-Fa-f0-9]*) return 1 ;; esac
+  [ "${#P_TOKEN}" -eq 32 ] || return 1
+  case "$P_EXIT_CODE" in ''|*[!0-9]*) [ -z "$P_EXIT_CODE" ] || return 1 ;; esac
+}
+
+pending_write() {  # <task-id> <run-id> <token> <exit-code>
+  local id=$1 run=$2 token=$3 exit_code=$4 path="$STATE/$1.observer.pending" tmp old_umask
+  mkdir -p "$STATE"
+  [ ! -L "$path" ] || return 1
+  old_umask=$(umask)
+  umask 077
+  tmp=$(mktemp "$STATE/.${id}.observer.pending.XXXXXX") || { umask "$old_umask"; return 1; }
+  umask "$old_umask"
+  {
+    printf 'task=%s\n' "$id"
+    printf 'run=%s\n' "$run"
+    printf 'token=%s\n' "$token"
+    printf 'exit_code=%s\n' "$exit_code"
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$path"
+}
+
+pending_consume() {  # <task-id>
+  local id=$1 pending="$STATE/$1.observer.pending" record="$STATE/$1.observer"
+  [ -e "$pending" ] || [ -L "$pending" ] || return 0
+  pending_load "$pending" || return 1
+  [ "$P_TASK" = "$id" ] || return 1
+  if [ ! -e "$record" ] && [ ! -L "$record" ]; then
+    rm -f "$pending"
+    return 0
+  fi
+  record_load "$record" || return 1
+  if [ "$R_TASK" != "$P_TASK" ] || [ "$R_RUN" != "$P_RUN" ] || [ "$R_TOKEN" != "$P_TOKEN" ]; then
+    rm -f "$pending"
+    return 0
+  fi
+  case "$R_STATUS" in
+    ready|submitted|attached)
+      R_STATUS=detached
+      R_EXIT_CODE=$P_EXIT_CODE
+      record_write "$record" || return 1
+      ;;
+  esac
+  rm -f "$pending"
+}
+
 generate_token() {
   od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
 }
@@ -873,12 +942,17 @@ cleanup_action() {
   observer_close_exact \
     || { echo "error: failed to close exact observer for task $ID run $R_RUN" >&2; return 1; }
   rm -f "$RECORD"
+  rm -f "$STATE/$ID.observer.pending"
   printf 'observer: cleaned task %s run %s\n' "$ID" "$R_RUN"
 }
 
 session_record_transition() {  # <task-id> <run-id> <token> <claim|detach> <exit-code>
   local id=$1 run=$2 token=$3 action=$4 exit_code=$5 record="$STATE/$1.observer"
   lock_acquire "$id" || return 2
+  if ! pending_consume "$id"; then
+    lock_release
+    return 1
+  fi
   if ! record_load "$record" \
      || [ "$R_TASK" != "$id" ] \
      || [ "$R_RUN" != "$run" ] \
@@ -914,7 +988,7 @@ session_transition_bounded() {  # <task-id> <run-id> <token> <claim|detach> <exi
 }
 
 session_action() {  # internal: <task-id> <run-id> <token>
-  local id=$1 run=$2 token=$3 rc=0 claim_rc
+  local id=$1 run=$2 token=$3 rc=0 claim_rc detach_rc
   observer_id_valid "$id" && run_id_valid "$run" || exit 0
   case "$token" in ''|*[!A-Fa-f0-9]*) exit 0 ;; esac
   [ "${#token}" -eq 32 ] || exit 0
@@ -922,7 +996,9 @@ session_action() {  # internal: <task-id> <run-id> <token>
   session_transition_bounded "$id" "$run" "$token" claim "" || claim_rc=$?
   if [ "$claim_rc" -ne 0 ]; then
     if [ "$claim_rc" -eq 2 ]; then
-      session_transition_bounded "$id" "$run" "$token" detach "" || true
+      detach_rc=0
+      session_transition_bounded "$id" "$run" "$token" detach "" || detach_rc=$?
+      [ "$detach_rc" -ne 2 ] || pending_write "$id" "$run" "$token" "" || true
     fi
     exit 0
   fi
@@ -930,7 +1006,9 @@ session_action() {  # internal: <task-id> <run-id> <token>
   "$NM_BIN" attach --run "$run"
   rc=$?
   set -e
-  session_transition_bounded "$id" "$run" "$token" detach "$rc" || true
+  detach_rc=0
+  session_transition_bounded "$id" "$run" "$token" detach "$rc" || detach_rc=$?
+  [ "$detach_rc" -ne 2 ] || pending_write "$id" "$run" "$token" "$rc" || true
   exit 0
 }
 
@@ -973,6 +1051,7 @@ meta_load "$ID" || exit 1
 resolve_nm_bin || { echo "error: no-mistakes executable is unavailable" >&2; exit 1; }
 lock_acquire "$ID" || { echo "error: observer lifecycle is already active for task $ID" >&2; exit 1; }
 trap lock_release EXIT
+pending_consume "$ID" || { echo "error: unsafe pending observer transition for task $ID" >&2; exit 1; }
 
 case "$ACTION" in
   start) start_action ;;

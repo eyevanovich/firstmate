@@ -40,6 +40,10 @@ EOF
 fi
 if [ "${1:-}" = attach ] && [ "${2:-}" = --run ]; then
   printf 'attach %s\n' "$3" >> "$FM_TEST_NM_LOG"
+  if [ -n "${FM_TEST_ATTACH_LOCK:-}" ]; then
+    mkdir "$FM_TEST_ATTACH_LOCK"
+    printf '%s\n' "$FM_TEST_ATTACH_LOCK_PID" > "$FM_TEST_ATTACH_LOCK/pid"
+  fi
   exit "${FM_TEST_ATTACH_RC:-0}"
 fi
 exit 1
@@ -716,6 +720,36 @@ EOF
   pass "tmux claim timeout tombstones ready state after lock release"
 }
 
+test_attach_exit_hands_off_detach_after_contention() {
+  local vals home repo branch record token pending out
+  reset_fakes
+  vals=$(make_home attach-exit-contention claude tmux)
+  IFS=$'\t' read -r home repo branch <<EOF
+$vals
+EOF
+  write_nm run-attach-contention "$branch" running
+  run_observer "$home" open task --run run-attach-contention >/dev/null
+  record="$home/state/task.observer"
+  token=$(record_value "$record" token)
+  pending="$home/state/task.observer.pending"
+  PATH="$FAKEBIN:$PATH" FM_TEST_SLEEP_COUNTER="$home/sleep-count" \
+    FM_TEST_SLEEP_LOCK="$home/state/.task.observer.lock" FM_TEST_SLEEP_RECORD="$record" \
+    FM_TEST_ATTACH_LOCK="$home/state/.task.observer.lock" FM_TEST_ATTACH_LOCK_PID="$$" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" FM_NM_OBSERVER_SESSION_RETRIES=2 \
+    FM_NM_OBSERVER_NO_MISTAKES="$FAKEBIN/no-mistakes" "$SCRIPT" _session task run-attach-contention "$token"
+  [ "$(record_value "$record" status)" = attached ] || fail "contended attach exit changed the record without its lock"
+  assert_present "$pending" "contended attach exit did not leave a durable pending transition"
+  rm -f "$home/state/.task.observer.lock/pid"
+  rmdir "$home/state/.task.observer.lock"
+  out=$(run_observer "$home" open task --run run-attach-contention 2>&1)
+  [ "$(record_value "$record" status)" = detached ] || fail "next lock owner did not consume the pending detach"
+  assert_absent "$pending" "consumed pending detach was not removed"
+  assert_contains "$out" "will not be respawned automatically" "consumed detach did not preserve explicit-reopen-only behavior"
+  [ "$(grep -c 'attach run-attach-contention' "$FM_TEST_NM_LOG")" -eq 1 ] || fail "pending detach caused a second attach"
+  git -C "$TMP_ROOT/attach-exit-contention-base" worktree remove --force "$repo" >/dev/null
+  pass "attach exit hands off its detach across lock contention"
+}
+
 test_herdr_no_focus_separation_and_exact_cleanup() {
   local vals home repo branch record out
   reset_fakes
@@ -773,5 +807,6 @@ test_interrupted_creates_reconcile_without_duplicates
 test_herdr_timeout_falls_back_without_touching_worker
 test_herdr_submit_phases_reconcile_without_duplicate_text
 test_tmux_unclaimed_ready_tombstones_after_lock_release
+test_attach_exit_hands_off_detach_after_contention
 test_herdr_no_focus_separation_and_exact_cleanup
 test_header_and_contract_keep_observer_non_owner
