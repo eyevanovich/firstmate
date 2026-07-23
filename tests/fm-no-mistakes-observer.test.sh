@@ -54,6 +54,23 @@ if [ -f "$FM_TEST_NM_STATE/after-send" ]; then
 fi
 SH
 
+cat > "$FAKEBIN/sleep" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ -n "${FM_TEST_SLEEP_COUNTER:-}" ]; then
+  count=$(cat "$FM_TEST_SLEEP_COUNTER" 2>/dev/null || printf 0)
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$FM_TEST_SLEEP_COUNTER"
+  if [ "$count" -eq "${FM_TEST_SLEEP_RELEASE_AT:-0}" ]; then
+    [ "${FM_TEST_SLEEP_REMOVE_RECORD:-0}" != 1 ] || rm -f "$FM_TEST_SLEEP_RECORD"
+    rm -f "$FM_TEST_SLEEP_LOCK/pid"
+    rmdir "$FM_TEST_SLEEP_LOCK"
+  fi
+  exit 0
+fi
+exec /bin/sleep "$@"
+SH
+
 cat > "$FAKEBIN/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -195,7 +212,7 @@ case "${args[0]:-} ${args[1]:-}" in
   *) exit 1 ;;
 esac
 SH
-chmod +x "$FAKEBIN/no-mistakes" "$FAKEBIN/fm-send" "$FAKEBIN/tmux" "$FAKEBIN/herdr"
+chmod +x "$FAKEBIN/no-mistakes" "$FAKEBIN/fm-send" "$FAKEBIN/sleep" "$FAKEBIN/tmux" "$FAKEBIN/herdr"
 
 write_nm() {  # <run> <branch> <status> [current]
   local run=$1 branch=$2 status=$3 current=${4:-yes}
@@ -630,9 +647,11 @@ EOF
 
   token=$(record_value "$record" token)
   mkdir "$home/state/.task.observer.lock"
-  printf '99999999\n' > "$home/state/.task.observer.lock/pid"
+  printf '%s\n' "$$" > "$home/state/.task.observer.lock/pid"
   : > "$FM_TEST_HERDR_LOG"
-  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" \
+  PATH="$FAKEBIN:$PATH" FM_TEST_SLEEP_COUNTER="$home/sleep-count" FM_TEST_SLEEP_RELEASE_AT=2 \
+    FM_TEST_SLEEP_LOCK="$home/state/.task.observer.lock" FM_TEST_SLEEP_RECORD="$record" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" FM_NM_OBSERVER_SESSION_RETRIES=2 \
     FM_NM_OBSERVER_NO_MISTAKES="$FAKEBIN/no-mistakes" "$SCRIPT" _session task run-herdr-phases "$token"
   [ "$(record_value "$record" status)" = detached ] || fail "unclaimed submitted observer was not tombstoned"
   assert_no_grep $'pane\037send-text' "$FM_TEST_HERDR_LOG" "claim timeout typed the attach command again"
@@ -655,8 +674,46 @@ EOF
   assert_contains "$out" "automatic observer launch failed without affecting validation" "unknown send-text outcome did not fail safely"
   assert_no_grep $'pane\037send-text' "$FM_TEST_HERDR_LOG" "unknown send-text outcome repeated the attach command"
   assert_no_grep $'pane\037send-keys' "$FM_TEST_HERDR_LOG" "unknown send-text outcome submitted unknown input"
+
+  sed 's/^status=failed$/status=submitted/' "$record" > "$record.tmp"
+  chmod 600 "$record.tmp"
+  mv "$record.tmp" "$record"
+  token=$(record_value "$record" token)
+  mkdir "$home/state/.task.observer.lock"
+  printf '%s\n' "$$" > "$home/state/.task.observer.lock/pid"
+  rm -f "$home/sleep-count"
+  : > "$FM_TEST_NM_LOG"
+  PATH="$FAKEBIN:$PATH" FM_TEST_SLEEP_COUNTER="$home/sleep-count" FM_TEST_SLEEP_RELEASE_AT=1 \
+    FM_TEST_SLEEP_REMOVE_RECORD=1 FM_TEST_SLEEP_LOCK="$home/state/.task.observer.lock" FM_TEST_SLEEP_RECORD="$record" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" FM_NM_OBSERVER_SESSION_RETRIES=2 \
+    FM_NM_OBSERVER_NO_MISTAKES="$FAKEBIN/no-mistakes" "$SCRIPT" _session task run-herdr-phases "$token"
+  assert_absent "$record" "session claim resurrected a concurrently removed observer record"
+  assert_no_grep 'attach run-herdr-phases' "$FM_TEST_NM_LOG" "session attached after its observer record was removed"
   git -C "$TMP_ROOT/herdr-submit-phases-base" worktree remove --force "$repo" >/dev/null
   pass "Herdr submit phases resume only a known staged command"
+}
+
+test_tmux_unclaimed_ready_tombstones_after_lock_release() {
+  local vals home repo branch record token
+  reset_fakes
+  vals=$(make_home tmux-claim-timeout claude tmux)
+  IFS=$'\t' read -r home repo branch <<EOF
+$vals
+EOF
+  write_nm run-tmux-timeout "$branch" running
+  run_observer "$home" open task --run run-tmux-timeout >/dev/null
+  record="$home/state/task.observer"
+  token=$(record_value "$record" token)
+  mkdir "$home/state/.task.observer.lock"
+  printf '%s\n' "$$" > "$home/state/.task.observer.lock/pid"
+  PATH="$FAKEBIN:$PATH" FM_TEST_SLEEP_COUNTER="$home/sleep-count" FM_TEST_SLEEP_RELEASE_AT=2 \
+    FM_TEST_SLEEP_LOCK="$home/state/.task.observer.lock" FM_TEST_SLEEP_RECORD="$record" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" FM_NM_OBSERVER_SESSION_RETRIES=2 \
+    FM_NM_OBSERVER_NO_MISTAKES="$FAKEBIN/no-mistakes" "$SCRIPT" _session task run-tmux-timeout "$token"
+  [ "$(record_value "$record" status)" = detached ] || fail "unclaimed tmux ready observer was not tombstoned"
+  assert_no_grep 'attach run-tmux-timeout' "$FM_TEST_NM_LOG" "timed-out tmux session ran attach"
+  git -C "$TMP_ROOT/tmux-claim-timeout-base" worktree remove --force "$repo" >/dev/null
+  pass "tmux claim timeout tombstones ready state after lock release"
 }
 
 test_herdr_no_focus_separation_and_exact_cleanup() {
@@ -715,5 +772,6 @@ test_unreadable_identity_refuses_cleanup
 test_interrupted_creates_reconcile_without_duplicates
 test_herdr_timeout_falls_back_without_touching_worker
 test_herdr_submit_phases_reconcile_without_duplicate_text
+test_tmux_unclaimed_ready_tombstones_after_lock_release
 test_herdr_no_focus_separation_and_exact_cleanup
 test_header_and_contract_keep_observer_non_owner

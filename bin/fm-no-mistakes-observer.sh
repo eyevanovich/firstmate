@@ -73,6 +73,8 @@
 #   FM_NM_OBSERVER_COMMAND_TIMEOUT seconds allowed per observer-only CLI read or
 #                                  terminal mutation before safe fallback
 #                                  (default: 10)
+#   FM_NM_OBSERVER_SESSION_RETRIES bounded internal session lock attempts
+#                                  (default: 100)
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,6 +87,7 @@ WAIT_SECS="${FM_NM_OBSERVER_WAIT_SECS:-180}"
 POLL_SECS="${FM_NM_OBSERVER_POLL_SECS:-1}"
 SETTLE_SECS="${FM_NM_OBSERVER_SETTLE_SECS:-0.2}"
 COMMAND_TIMEOUT="${FM_NM_OBSERVER_COMMAND_TIMEOUT:-10}"
+SESSION_RETRIES="${FM_NM_OBSERVER_SESSION_RETRIES:-100}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
@@ -873,51 +876,61 @@ cleanup_action() {
   printf 'observer: cleaned task %s run %s\n' "$ID" "$R_RUN"
 }
 
+session_record_transition() {  # <task-id> <run-id> <token> <claim|detach> <exit-code>
+  local id=$1 run=$2 token=$3 action=$4 exit_code=$5 record="$STATE/$1.observer"
+  lock_acquire "$id" || return 2
+  if ! record_load "$record" \
+     || [ "$R_TASK" != "$id" ] \
+     || [ "$R_RUN" != "$run" ] \
+     || [ "$R_TOKEN" != "$token" ]; then
+    lock_release
+    return 1
+  fi
+  case "$action:$R_STATUS" in
+    claim:ready|claim:submitted) R_STATUS=attached; R_EXIT_CODE= ;;
+    detach:ready|detach:submitted|detach:attached) R_STATUS=detached; R_EXIT_CODE=$exit_code ;;
+    *) lock_release; return 1 ;;
+  esac
+  if ! record_write "$record"; then
+    lock_release
+    return 1
+  fi
+  lock_release
+  return 0
+}
+
+session_transition_bounded() {  # <task-id> <run-id> <token> <claim|detach> <exit-code>
+  local id=$1 run=$2 token=$3 action=$4 exit_code=$5 transition_rc
+  for _ in $(seq 1 "$SESSION_RETRIES"); do
+    transition_rc=0
+    session_record_transition "$id" "$run" "$token" "$action" "$exit_code" || transition_rc=$?
+    if [ "$transition_rc" -eq 0 ]; then
+      return 0
+    fi
+    [ "$transition_rc" -eq 2 ] || return 1
+    sleep 0.1
+  done
+  return 2
+}
+
 session_action() {  # internal: <task-id> <run-id> <token>
-  local id=$1 run=$2 token=$3 rc=0 record
+  local id=$1 run=$2 token=$3 rc=0 claim_rc
   observer_id_valid "$id" && run_id_valid "$run" || exit 0
   case "$token" in ''|*[!A-Fa-f0-9]*) exit 0 ;; esac
   [ "${#token}" -eq 32 ] || exit 0
-  record="$STATE/$id.observer"
-  for _ in $(seq 1 100); do
-    if [ ! -d "$STATE/.$id.observer.lock" ] \
-       && record_load "$record" \
-       && [ "$R_TASK" = "$id" ] \
-       && [ "$R_RUN" = "$run" ] \
-       && [ "$R_TOKEN" = "$token" ] \
-       && { [ "$R_STATUS" = ready ] || [ "$R_STATUS" = submitted ] || [ "$R_STATUS" = attached ]; }; then
-      R_STATUS=attached
-      R_EXIT_CODE=
-      record_write "$record" || exit 0
-      set +e
-      "$NM_BIN" attach --run "$run"
-      rc=$?
-      set -e
-      if record_load "$record" \
-         && [ "$R_TASK" = "$id" ] \
-         && [ "$R_RUN" = "$run" ] \
-         && [ "$R_TOKEN" = "$token" ] \
-         && [ "$R_STATUS" = attached ]; then
-        R_STATUS=detached
-        R_EXIT_CODE=$rc
-        record_write "$record" || true
-      fi
-      exit 0
+  claim_rc=0
+  session_transition_bounded "$id" "$run" "$token" claim "" || claim_rc=$?
+  if [ "$claim_rc" -ne 0 ]; then
+    if [ "$claim_rc" -eq 2 ]; then
+      session_transition_bounded "$id" "$run" "$token" detach "" || true
     fi
-    sleep 0.1
-  done
-  if lock_acquire "$id"; then
-    if record_load "$record" \
-       && [ "$R_TASK" = "$id" ] \
-       && [ "$R_RUN" = "$run" ] \
-       && [ "$R_TOKEN" = "$token" ] \
-       && [ "$R_STATUS" = submitted ]; then
-      R_STATUS=detached
-      R_EXIT_CODE=
-      record_write "$record" || true
-    fi
-    lock_release
+    exit 0
   fi
+  set +e
+  "$NM_BIN" attach --run "$run"
+  rc=$?
+  set -e
+  session_transition_bounded "$id" "$run" "$token" detach "$rc" || true
   exit 0
 }
 
@@ -925,6 +938,7 @@ case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   _session)
     [ "$#" -eq 4 ] || exit 0
+    number_valid "$SESSION_RETRIES" && [ "$SESSION_RETRIES" -gt 0 ] || exit 0
     session_action "$2" "$3" "$4"
     ;;
 esac
