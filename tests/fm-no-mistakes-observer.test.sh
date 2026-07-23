@@ -621,6 +621,30 @@ EOF
   pass "interrupted creates reconcile by token identity without duplicate observers"
 }
 
+test_record_only_generation_reconciles() {
+  local vals home repo branch record generation target
+  reset_fakes
+  vals=$(make_home record-only-generation claude tmux)
+  IFS=$'\t' read -r home repo branch <<EOF
+$vals
+EOF
+  write_nm run-record-only "$branch" running
+  run_observer "$home" open task --run run-record-only >/dev/null
+  record="$home/state/task.observer"
+  generation="$home/state/.task.observer-$(record_value "$record" token)"
+  target=$(record_value "$record" observer_target)
+  rmdir "$generation"
+  rm -f "$FM_TEST_TMUX_STATE/$target"
+  sed 's/^status=ready$/status=creating/' "$record" > "$record.tmp"
+  chmod 600 "$record.tmp"
+  mv "$record.tmp" "$record"
+  run_observer "$home" open task --run run-record-only >/dev/null
+  [ -d "$generation" ] || fail "record-only interrupted initialization did not recreate its owned generation"
+  [ "$(grep -c '^new-window' "$FM_TEST_TMUX_LOG")" -eq 2 ] || fail "record-only retry did not reconcile exactly one replacement observer"
+  git -C "$TMP_ROOT/record-only-generation-base" worktree remove --force "$repo" >/dev/null
+  pass "authoritative record reconciles interrupted generation publication"
+}
+
 test_herdr_timeout_falls_back_without_touching_worker() {
   local vals home repo branch out started elapsed
   reset_fakes
@@ -821,6 +845,7 @@ test_exact_cleanup_and_running_refusal
 test_cleanup_identity_mismatch_refuses
 test_unreadable_identity_refuses_cleanup
 test_interrupted_creates_reconcile_without_duplicates
+test_record_only_generation_reconciles
 test_herdr_timeout_falls_back_without_touching_worker
 test_herdr_submit_phases_reconcile_without_duplicate_text
 test_tmux_unclaimed_ready_tombstones_after_lock_release

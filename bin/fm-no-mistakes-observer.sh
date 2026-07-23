@@ -317,6 +317,18 @@ generation_create() {  # <task-id> <token>
   mkdir -m 700 "$dir"
 }
 
+generation_ensure() {  # <task-id> <token>
+  local dir mode
+  dir=$(generation_dir "$1" "$2")
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+    mode=$(record_mode "$dir") || return 1
+    [ "$mode" = 700 ]
+    return
+  fi
+  generation_create "$1" "$2"
+}
+
 generation_remove() {  # <task-id> <token>
   local dir
   observer_id_valid "$1" || return 1
@@ -511,9 +523,9 @@ observer_record_initialize() {  # <run-id>
   R_STATUS=creating
   R_CREATED_AT=$now
   R_UPDATED_AT=$now
-  generation_create "$ID" "$token" || return 1
-  if ! record_write "$RECORD"; then
-    generation_remove "$ID" "$token" || true
+  record_write "$RECORD" || return 1
+  if ! generation_create "$ID" "$token"; then
+    rm -f "$RECORD"
     return 1
   fi
 }
@@ -793,6 +805,10 @@ observer_prepare_run() {  # <run-id> <allow-reopen:0|1>
     fi
     if ! record_matches_meta; then
       observer_manual_only "observer record does not match task $ID metadata; refusing to touch it" "$run"
+      return 1
+    fi
+    if ! generation_ensure "$ID" "$R_TOKEN"; then
+      observer_manual_only "observer generation state is unsafe; refusing to touch it" "$run"
       return 1
     fi
     old_run=$R_RUN
