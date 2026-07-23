@@ -80,6 +80,7 @@ FM_GITLAB_PROJECT_ID=
 FM_GITLAB_DEFAULT_BRANCH=
 FM_GITLAB_CI_DISABLED=
 FM_GITLAB_PROJECT_ARCHIVED=
+FM_GITLAB_PROJECT_REMOVE_SOURCE_DEFAULT=
 FM_GITLAB_USER_ID=
 FM_GITLAB_USERNAME=
 FM_GITLAB_BODY_JSON=
@@ -162,6 +163,13 @@ load_trusted_project() {
     || return 1
   FM_GITLAB_PROJECT_ARCHIVED=$(jq -r '
       if (.archived | type) == "boolean" then .archived else error("invalid archived flag") end
+    ' <<< "$raw") || return 1
+  FM_GITLAB_PROJECT_REMOVE_SOURCE_DEFAULT=$(jq -r '
+      if has("remove_source_branch_after_merge") then
+        if (.remove_source_branch_after_merge | type) == "boolean" then
+          .remove_source_branch_after_merge
+        else error("invalid remove source branch default") end
+      else false end
     ' <<< "$raw") || return 1
   FM_GITLAB_CI_DISABLED=$(jq -r '
       if has("builds_access_level") then
@@ -648,17 +656,40 @@ mr_author_is_self() {
     ' <<< "$1" >/dev/null 2>&1
 }
 
-mr_create_state_valid() {
+mr_create_state_mismatches() {
   local raw=$1 head=$2 title=$3 description_json=$4 draft=$5 remove_source=$6
-  jq -e --arg head "$head" --arg title "$title" --argjson description "$description_json" \
-    --argjson draft "$draft" --argjson remove_source "$remove_source" '
-      .state == "opened"
-      and .sha == $head
-      and .title == $title
-      and (.description // "") == $description
-      and .draft == $draft
-      and .force_remove_source_branch == $remove_source
-    ' <<< "$raw" >/dev/null 2>&1
+  local project_remove_source=$7
+  jq -r --arg head "$head" --arg title "$title" --argjson description "$description_json" \
+    --argjson draft "$draft" --argjson remove_source "$remove_source" \
+    --argjson project_remove_source "$project_remove_source" '
+      def draft_state:
+        if (.draft | type) == "boolean" then .draft
+        elif (.work_in_progress | type) == "boolean" then .work_in_progress
+        else null end;
+      # GitLab reports the MR choice separately from the project deletion policy.
+      def remove_source_state:
+        if (.should_remove_source_branch | type) == "boolean" then .should_remove_source_branch
+        elif (.force_remove_source_branch | type) == "boolean"
+          and .force_remove_source_branch != $project_remove_source
+        then .force_remove_source_branch
+        else null end;
+      [
+        if .state == "opened" then empty else "state" end,
+        if .sha == $head then empty else "sha" end,
+        if .title == $title then empty else "title" end,
+        if (.description // "") == $description then empty else "description" end,
+        if draft_state == $draft then empty else "draft" end,
+        if remove_source_state == $remove_source then empty
+        else "remove_source_branch(force_remove_source_branch,should_remove_source_branch)" end
+      ] | join(",")
+    ' <<< "$raw" 2>/dev/null
+}
+
+require_mr_create_state() {
+  local context=$1 mismatches
+  shift
+  mismatches=$(mr_create_state_mismatches "$@") || mismatches=payload
+  [ -z "$mismatches" ] || fail "$context mismatch ($mismatches)"
 }
 
 prepare_mr_mutation() {
@@ -1317,8 +1348,9 @@ cmd_mr_create() {
       || fail "merge-request identity does not match the trusted repository and branches"
     mr_author_is_self "$raw" \
       || fail "matching merge-request author is not authenticated user $FM_GITLAB_USERNAME"
-    mr_create_state_valid "$raw" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
-      || fail "matching merge request does not match requested head and metadata"
+    require_mr_create_state "matching merge request does not match requested head and metadata" \
+      "$raw" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
+      "$FM_GITLAB_PROJECT_REMOVE_SOURCE_DEFAULT"
     emit_mr "$raw" true
     return 0
   fi
@@ -1348,8 +1380,9 @@ cmd_mr_create() {
     || fail "created merge-request identity could not be read back"
   mr_author_is_self "$verified" \
     || fail "created merge-request author is not authenticated user $FM_GITLAB_USERNAME"
-  mr_create_state_valid "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
-    || fail "created merge-request head and metadata verification mismatch"
+  require_mr_create_state "created merge-request head and metadata verification" \
+    "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
+    "$FM_GITLAB_PROJECT_REMOVE_SOURCE_DEFAULT"
   emit_mr "$verified"
 }
 
