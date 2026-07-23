@@ -101,7 +101,8 @@ emit_mr_json() {
     head_pipeline=$(printf '{"id":9,"status":"%s","sha":"%s","web_url":"https://gitlab.com/p/9"}' \
       "$pipeline" "$pipeline_sha")
   fi
-  jq -cn --argjson iid "$iid" --argjson project_id "$project_id" \
+  local mr
+  mr=$(jq -cn --argjson iid "$iid" --argjson project_id "$project_id" \
     --argjson source_project_id "$source_project_id" --argjson target_project_id "$target_project_id" \
     --arg title "$title" --arg state "$state" --arg source "$source_branch" --arg target "$target_branch" \
     --arg sha "$head_sha" --argjson merge_sha "$merge_sha" --arg description "$description" \
@@ -116,7 +117,12 @@ emit_mr_json() {
        description:$description,
        merge_status:"can_be_merged",detailed_merge_status:"mergeable",sha:$sha,
        merge_commit_sha:$merge_sha,labels:["backend"],
-       author:{id:$author_id,username:$author_username},assignees:[],head_pipeline:$head_pipeline}'
+       author:{id:$author_id,username:$author_username},assignees:[],head_pipeline:$head_pipeline}')
+  [ "${FM_FAKE_MR_OMIT_SHOULD_REMOVE:-false}" != true ] \
+    || mr=$(jq 'del(.should_remove_source_branch)' <<< "$mr")
+  [ "${FM_FAKE_MR_DESCRIPTION_FALSE:-false}" != true ] \
+    || mr=$(jq '.description=false' <<< "$mr")
+  printf '%s\n' "$mr"
 }
 
 case "${1:-} ${2:-}" in
@@ -486,10 +492,26 @@ test_mr_create_reuses_only_one_exact_match() {
       --remove-source-branch 2>&1)
   rc=$?
   expect_code 1 "$rc" "conflicting merge-request remove-source intent"
-  assert_contains "$out" \
-    "(remove_source_branch(force_remove_source_branch,should_remove_source_branch))" \
+  assert_contains "$out" "(should_remove_source_branch)" \
     "remove-source field-only mismatch diagnostic"
   assert_no_grep '--method POST' "$LOG" "conflicting remove-source retry created another merge request"
+
+  reset_case
+  out=$(FM_FAKE_MR_OMIT_SHOULD_REMOVE=true run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "unproven merge-request remove-source intent"
+  assert_contains "$out" "(should_remove_source_branch)" \
+    "missing remove-source intent diagnostic"
+  assert_no_grep '--method POST' "$LOG" "unproven remove-source retry created another merge request"
+
+  reset_case
+  out=$(FM_FAKE_MR_DESCRIPTION_FALSE=true run_adapter mr-create "$REPO" \
+    --title 'Ship fix' --source fm/fix 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "malformed empty merge-request description"
+  assert_contains "$out" "(description)" "malformed description diagnostic"
+  assert_no_grep '--method POST' "$LOG" "malformed description retry created another merge request"
 
   reset_case
   out=$(FM_FAKE_MR_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
@@ -504,8 +526,9 @@ test_mr_create_reuses_only_one_exact_match() {
     --title 'Ship fix' --source fm/fix 2>&1)
   rc=$?
   expect_code 1 "$rc" "foreign-authored merge-request reuse"
-  assert_contains "$out" "author is not authenticated user" \
+  assert_contains "$out" "(author.id,author.username)" \
     "foreign-authored merge-request reuse refusal"
+  assert_not_contains "$out" "mate" "authorship mismatch leaked authenticated username"
   assert_no_grep '--method POST' "$LOG" "foreign-authored candidate created another merge request"
 
   reset_case
@@ -602,8 +625,9 @@ test_mr_create_reuses_only_one_exact_match() {
     run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix 2>&1)
   rc=$?
   expect_code 1 "$rc" "foreign-authored created merge request"
-  assert_contains "$out" "created merge-request author is not authenticated user" \
+  assert_contains "$out" "(author.id,author.username)" \
     "foreign-authored created merge-request refusal"
+  assert_not_contains "$out" "mate" "created authorship mismatch leaked authenticated username"
 
   reset_case
   out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_CREATED_MR_IDENTITY=fork \

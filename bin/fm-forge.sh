@@ -658,29 +658,28 @@ mr_author_is_self() {
 
 mr_create_state_mismatches() {
   local raw=$1 head=$2 title=$3 description_json=$4 draft=$5 remove_source=$6
-  local project_remove_source=$7
   jq -r --arg head "$head" --arg title "$title" --argjson description "$description_json" \
     --argjson draft "$draft" --argjson remove_source "$remove_source" \
-    --argjson project_remove_source "$project_remove_source" '
+    --argjson user_id "$FM_GITLAB_USER_ID" --arg username "$FM_GITLAB_USERNAME" '
       def draft_state:
         if (.draft | type) == "boolean" then .draft
         elif (.work_in_progress | type) == "boolean" then .work_in_progress
         else null end;
-      # GitLab reports the MR choice separately from the project deletion policy.
-      def remove_source_state:
-        if (.should_remove_source_branch | type) == "boolean" then .should_remove_source_branch
-        elif (.force_remove_source_branch | type) == "boolean"
-          and .force_remove_source_branch != $project_remove_source
-        then .force_remove_source_branch
+      def description_state:
+        if (.description | type) == "string" then .description
+        elif .description == null and has("description") then ""
         else null end;
       [
         if .state == "opened" then empty else "state" end,
         if .sha == $head then empty else "sha" end,
         if .title == $title then empty else "title" end,
-        if (.description // "") == $description then empty else "description" end,
+        if description_state == $description then empty else "description" end,
         if draft_state == $draft then empty else "draft" end,
-        if remove_source_state == $remove_source then empty
-        else "remove_source_branch(force_remove_source_branch,should_remove_source_branch)" end
+        if ((.should_remove_source_branch | type) == "boolean"
+          and .should_remove_source_branch == $remove_source)
+          then empty else "should_remove_source_branch" end,
+        if .author.id == $user_id then empty else "author.id" end,
+        if .author.username == $username then empty else "author.username" end
       ] | join(",")
     ' <<< "$raw" 2>/dev/null
 }
@@ -1346,11 +1345,8 @@ cmd_mr_create() {
       || fail "merge-request identity is unavailable"
     mr_identity_valid "$raw" "$iid" "$source" "$target" \
       || fail "merge-request identity does not match the trusted repository and branches"
-    mr_author_is_self "$raw" \
-      || fail "matching merge-request author is not authenticated user $FM_GITLAB_USERNAME"
     require_mr_create_state "matching merge request does not match requested head and metadata" \
-      "$raw" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
-      "$FM_GITLAB_PROJECT_REMOVE_SOURCE_DEFAULT"
+      "$raw" "$head" "$expected_title" "$body_json" "$draft" "$remove_source"
     emit_mr "$raw" true
     return 0
   fi
@@ -1378,11 +1374,8 @@ cmd_mr_create() {
     || fail "created merge-request identity does not match the trusted repository and branches"
   verified=$(checked_mr_raw "$iid" "$source" "$target") \
     || fail "created merge-request identity could not be read back"
-  mr_author_is_self "$verified" \
-    || fail "created merge-request author is not authenticated user $FM_GITLAB_USERNAME"
   require_mr_create_state "created merge-request head and metadata verification" \
-    "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" \
-    "$FM_GITLAB_PROJECT_REMOVE_SOURCE_DEFAULT"
+    "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source"
   emit_mr "$verified"
 }
 
