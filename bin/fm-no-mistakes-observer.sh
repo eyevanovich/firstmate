@@ -281,7 +281,7 @@ record_write() {  # <path>; globals R_*
 
 pending_load() {  # <path>
   local path=$1 line key value seen='|' mode
-  P_TASK= P_RUN= P_TOKEN= P_EXIT_CODE=
+  P_TASK='' P_RUN='' P_TOKEN='' P_EXIT_CODE=''
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
   mode=$(record_mode "$path") || return 1
   [ "$mode" = 600 ] || return 1
