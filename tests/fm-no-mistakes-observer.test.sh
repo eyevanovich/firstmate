@@ -342,7 +342,7 @@ EOF
 }
 
 test_detach_stays_detached_until_reopen() {
-  local vals home repo branch record target out
+  local vals home repo branch record target generation out
   reset_fakes
   vals=$(make_home detach claude tmux)
   IFS=$'\t' read -r home repo branch <<EOF
@@ -362,8 +362,20 @@ EOF
   [ "$(grep -c '^new-window' "$FM_TEST_TMUX_LOG")" -eq 1 ] || fail "ordinary retry respawned a detached observer"
   assert_contains "$out" "remains detached" "ordinary retry did not explain detach persistence"
 
+  generation="$home/state/.task.observer-$(record_value "$record" token)"
   run_observer "$home" reopen task --run run-detach >/dev/null
   [ "$(grep -c '^new-window' "$FM_TEST_TMUX_LOG")" -eq 2 ] || fail "explicit reopen did not create a replacement observer"
+  assert_absent "$generation" "reopen preserved the retired observer generation"
+
+  target=$(record_value "$record" observer_target)
+  generation="$home/state/.task.observer-$(record_value "$record" token)"
+  sed 's/^status=ready$/status=attached/' "$record" > "$record.tmp"
+  chmod 600 "$record.tmp"
+  mv "$record.tmp" "$record"
+  rm -f "$FM_TEST_TMUX_STATE/$target"
+  run_observer "$home" reopen task --run run-detach >/dev/null
+  [ "$(grep -c '^new-window' "$FM_TEST_TMUX_LOG")" -eq 3 ] || fail "reopen of a gone attached observer did not create exactly one replacement"
+  assert_absent "$generation" "gone-attached reopen preserved the retired observer generation"
   git -C "$TMP_ROOT/detach-base" worktree remove --force "$repo" >/dev/null
   pass "q or terminal exit stays detached until explicit reopen"
 }
@@ -458,7 +470,7 @@ EOF
 }
 
 test_exact_cleanup_and_running_refusal() {
-  local vals home repo branch record target out rc
+  local vals home repo branch record target generation out rc
   reset_fakes
   vals=$(make_home cleanup claude tmux)
   IFS=$'\t' read -r home repo branch <<EOF
@@ -468,6 +480,7 @@ EOF
   run_observer "$home" open task --run run-clean >/dev/null
   record="$home/state/task.observer"
   target=$(record_value "$record" observer_target)
+  generation="$home/state/.task.observer-$(record_value "$record" token)"
 
   set +e
   out=$(run_observer "$home" cleanup task 2>&1)
@@ -481,6 +494,7 @@ EOF
   write_nm run-clean "$branch" completed
   run_observer "$home" cleanup task >/dev/null
   assert_absent "$record" "terminal cleanup did not remove the observer record"
+  assert_absent "$generation" "terminal cleanup did not remove generation-scoped transition state"
   [ ! -f "$FM_TEST_TMUX_STATE/$target" ] || fail "terminal cleanup did not close the exact observer"
   assert_grep $'kill-window\037-t\037@2' "$FM_TEST_TMUX_LOG" "cleanup did not target the stable observer id"
   assert_no_grep $'kill-window\037-t\037crew:fm-task' "$FM_TEST_TMUX_LOG" "cleanup targeted the worker endpoint"
@@ -731,7 +745,7 @@ EOF
   run_observer "$home" open task --run run-attach-contention >/dev/null
   record="$home/state/task.observer"
   token=$(record_value "$record" token)
-  pending="$home/state/task.observer.pending"
+  pending="$home/state/.task.observer-$token/detach.pending"
   PATH="$FAKEBIN:$PATH" FM_TEST_SLEEP_COUNTER="$home/sleep-count" \
     FM_TEST_SLEEP_LOCK="$home/state/.task.observer.lock" FM_TEST_SLEEP_RECORD="$record" \
     FM_TEST_ATTACH_LOCK="$home/state/.task.observer.lock" FM_TEST_ATTACH_LOCK_PID="$$" \
@@ -746,6 +760,9 @@ EOF
   assert_absent "$pending" "consumed pending detach was not removed"
   assert_contains "$out" "will not be respawned automatically" "consumed detach did not preserve explicit-reopen-only behavior"
   [ "$(grep -c 'attach run-attach-contention' "$FM_TEST_NM_LOG")" -eq 1 ] || fail "pending detach caused a second attach"
+  write_nm run-attach-contention "$branch" completed
+  run_observer "$home" cleanup task >/dev/null
+  assert_absent "$home/state/.task.observer-$token" "cleanup preserved a generation that could accept a late transition"
   git -C "$TMP_ROOT/attach-exit-contention-base" worktree remove --force "$repo" >/dev/null
   pass "attach exit hands off its detach across lock contention"
 }

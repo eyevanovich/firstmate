@@ -306,13 +306,36 @@ pending_load() {  # <path>
   case "$P_EXIT_CODE" in ''|*[!0-9]*) [ -z "$P_EXIT_CODE" ] || return 1 ;; esac
 }
 
+generation_dir() {  # <task-id> <token>
+  printf '%s/.%s.observer-%s' "$STATE" "$1" "$2"
+}
+
+generation_create() {  # <task-id> <token>
+  local dir
+  dir=$(generation_dir "$1" "$2")
+  [ ! -e "$dir" ] && [ ! -L "$dir" ] || return 1
+  mkdir -m 700 "$dir"
+}
+
+generation_remove() {  # <task-id> <token>
+  local dir
+  observer_id_valid "$1" || return 1
+  case "$2" in ''|*[!A-Fa-f0-9]*) return 1 ;; esac
+  [ "${#2}" -eq 32 ] || return 1
+  dir=$(generation_dir "$1" "$2")
+  [ ! -L "$dir" ] || return 1
+  [ ! -e "$dir" ] || rm -rf -- "$dir"
+}
+
 pending_write() {  # <task-id> <run-id> <token> <exit-code>
-  local id=$1 run=$2 token=$3 exit_code=$4 path="$STATE/$1.observer.pending" tmp old_umask
-  mkdir -p "$STATE"
+  local id=$1 run=$2 token=$3 exit_code=$4 dir path tmp old_umask
+  dir=$(generation_dir "$id" "$token")
+  path="$dir/detach.pending"
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   [ ! -L "$path" ] || return 1
   old_umask=$(umask)
   umask 077
-  tmp=$(mktemp "$STATE/.${id}.observer.pending.XXXXXX") || { umask "$old_umask"; return 1; }
+  tmp=$(mktemp "$dir/.detach.pending.XXXXXX") || { umask "$old_umask"; return 1; }
   umask "$old_umask"
   {
     printf 'task=%s\n' "$id"
@@ -325,18 +348,22 @@ pending_write() {  # <task-id> <run-id> <token> <exit-code>
 }
 
 pending_consume() {  # <task-id>
-  local id=$1 pending="$STATE/$1.observer.pending" record="$STATE/$1.observer"
+  local id=$1 record="$STATE/$1.observer" pending candidate found=0
+  for candidate in "$STATE/.$id.observer-"*/detach.pending; do
+    if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+      found=1
+      break
+    fi
+  done
+  [ "$found" -eq 1 ] || return 0
+  [ -e "$record" ] || [ -L "$record" ] || return 0
+  record_load "$record" || return 1
+  pending="$(generation_dir "$id" "$R_TOKEN")/detach.pending"
   [ -e "$pending" ] || [ -L "$pending" ] || return 0
   pending_load "$pending" || return 1
   [ "$P_TASK" = "$id" ] || return 1
-  if [ ! -e "$record" ] && [ ! -L "$record" ]; then
-    rm -f "$pending"
-    return 0
-  fi
-  record_load "$record" || return 1
   if [ "$R_TASK" != "$P_TASK" ] || [ "$R_RUN" != "$P_RUN" ] || [ "$R_TOKEN" != "$P_TOKEN" ]; then
-    rm -f "$pending"
-    return 0
+    return 1
   fi
   case "$R_STATUS" in
     ready|submitted|attached)
@@ -484,7 +511,11 @@ observer_record_initialize() {  # <run-id>
   R_STATUS=creating
   R_CREATED_AT=$now
   R_UPDATED_AT=$now
-  record_write "$RECORD"
+  generation_create "$ID" "$token" || return 1
+  if ! record_write "$RECORD"; then
+    generation_remove "$ID" "$token" || true
+    return 1
+  fi
 }
 
 session_command() {
@@ -753,7 +784,7 @@ observer_manual_only() {  # <reason> <run-id>
 }
 
 observer_prepare_run() {  # <run-id> <allow-reopen:0|1>
-  local run=$1 allow_reopen=$2 existing_state old_run
+  local run=$1 allow_reopen=$2 existing_state old_run old_token
   RECORD="$STATE/$ID.observer"
   if [ -e "$RECORD" ] || [ -L "$RECORD" ]; then
     if ! record_load "$RECORD"; then
@@ -765,6 +796,7 @@ observer_prepare_run() {  # <run-id> <allow-reopen:0|1>
       return 1
     fi
     old_run=$R_RUN
+    old_token=$R_TOKEN
     if [ "$old_run" != "$run" ]; then
       if ! nm_status_terminal "$old_run"; then
         observer_manual_only "task/run mismatch: recorded observer run $old_run is not terminal, requested $run" "$run"
@@ -774,6 +806,7 @@ observer_prepare_run() {  # <run-id> <allow-reopen:0|1>
         observer_manual_only "could not safely retire the exact observer for terminal run $old_run" "$run"
         return 1
       fi
+      generation_remove "$ID" "$old_token" || return 1
       rm -f "$RECORD"
       observer_record_initialize "$run" || return 1
       return 0
@@ -786,8 +819,15 @@ observer_prepare_run() {  # <run-id> <allow-reopen:0|1>
         existing_state=$?
         set -e
         if [ "$existing_state" -eq 0 ]; then
-          observer_manual_only "the observer terminal exited or was detached; it remains detached" "$run"
-          return 1
+          if [ "$allow_reopen" != 1 ]; then
+            observer_manual_only "the observer terminal exited or was detached; it remains detached" "$run"
+            return 1
+          fi
+          observer_close_exact || return 1
+          generation_remove "$ID" "$old_token" || return 1
+          rm -f "$RECORD"
+          observer_record_initialize "$run" || return 1
+          return 0
         fi
         if [ "$existing_state" -eq 2 ]; then
           observer_manual_only "recorded observer identity no longer matches its terminal; refusing to touch it" "$run"
@@ -805,6 +845,7 @@ observer_prepare_run() {  # <run-id> <allow-reopen:0|1>
           observer_manual_only "could not safely retire the exact $R_STATUS observer" "$run"
           return 1
         fi
+        generation_remove "$ID" "$old_token" || return 1
         rm -f "$RECORD"
         observer_record_initialize "$run" || return 1
         return 0
@@ -941,8 +982,9 @@ cleanup_action() {
   fi
   observer_close_exact \
     || { echo "error: failed to close exact observer for task $ID run $R_RUN" >&2; return 1; }
+  generation_remove "$ID" "$R_TOKEN" \
+    || { echo "error: failed to remove observer generation state for task $ID run $R_RUN" >&2; return 1; }
   rm -f "$RECORD"
-  rm -f "$STATE/$ID.observer.pending"
   printf 'observer: cleaned task %s run %s\n' "$ID" "$R_RUN"
 }
 
