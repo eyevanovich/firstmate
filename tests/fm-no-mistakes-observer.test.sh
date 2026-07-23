@@ -620,8 +620,15 @@ EOF
   write_nm run-herdr-phases "$branch" running
   run_observer "$home" open task --run run-herdr-phases >/dev/null
   record="$home/state/task.observer"
+  [ "$(record_value "$record" status)" = submitted ] || fail "successful Herdr submission was not durably distinguished from ready"
+  : > "$FM_TEST_HERDR_LOG"
+  out=$(run_observer "$home" open task --run run-herdr-phases 2>&1)
+  assert_contains "$out" "awaiting attachment; refusing to resubmit it" "submitted retry did not preserve the pending observer"
+  [ "$(record_value "$record" status)" = submitted ] || fail "submitted retry replaced the pending observer state"
+  assert_no_grep $'pane\037send-text' "$FM_TEST_HERDR_LOG" "submitted retry typed the attach command twice"
+  assert_no_grep $'pane\037send-keys' "$FM_TEST_HERDR_LOG" "submitted retry pressed Enter twice"
 
-  sed 's/^status=ready$/status=staged/' "$record" > "$record.tmp"
+  sed 's/^status=submitted$/status=staged/' "$record" > "$record.tmp"
   chmod 600 "$record.tmp"
   mv "$record.tmp" "$record"
   : > "$FM_TEST_HERDR_LOG"
@@ -629,7 +636,7 @@ EOF
   assert_no_grep $'pane\037send-text' "$FM_TEST_HERDR_LOG" "staged retry typed the attach command twice"
   assert_grep $'pane\037send-keys\037w1:p-observer\037enter' "$FM_TEST_HERDR_LOG" "staged retry did not submit the existing command"
 
-  sed 's/^status=ready$/status=staging/' "$record" > "$record.tmp"
+  sed 's/^status=submitted$/status=staging/' "$record" > "$record.tmp"
   chmod 600 "$record.tmp"
   mv "$record.tmp" "$record"
   : > "$FM_TEST_HERDR_LOG"

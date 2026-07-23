@@ -50,7 +50,7 @@
 # observer_backend, observer_label, observer_target, observer_session,
 # observer_workspace_id, observer_tab_id, observer_pane_id, token, status,
 # exit_code, created_at, and updated_at. Status is creating, ready, staging,
-# staged, submitting, attached, detached, or failed. The token is generated
+# staged, submitting, submitted, attached, detached, or failed. The token is generated
 # before endpoint creation and is
 # embedded in the visible label, so an interrupted create can be reconciled
 # idempotently without guessing from a task label alone. Herdr additionally
@@ -232,7 +232,7 @@ record_load() {  # <path>
   [ -n "$R_OBSERVER_LABEL" ] || return 1
   case "$R_TOKEN" in ''|*[!A-Fa-f0-9]*) return 1 ;; esac
   [ "${#R_TOKEN}" -eq 32 ] || return 1
-  case "$R_STATUS" in creating|ready|staging|staged|submitting|attached|detached|failed) ;; *) return 1 ;; esac
+  case "$R_STATUS" in creating|ready|staging|staged|submitting|submitted|attached|detached|failed) ;; *) return 1 ;; esac
   if [ "$R_STATUS" != creating ] && [ "$R_STATUS" != failed ]; then
     [ -n "$R_OBSERVER_TARGET" ] || return 1
   fi
@@ -661,7 +661,7 @@ observer_herdr_launch() {
     R_STATUS=submitting
     record_write "$RECORD" || return 1
     observer_herdr_cli "$R_OBSERVER_SESSION" pane send-keys "$R_OBSERVER_PANE_ID" enter >/dev/null 2>&1 || return 1
-    R_STATUS=ready
+    R_STATUS=submitted
     record_write "$RECORD" || return 1
   fi
   return 0
@@ -736,6 +736,10 @@ observer_prepare_run() {  # <run-id> <allow-reopen:0|1>
         rm -f "$RECORD"
         observer_record_initialize "$run" || return 1
         return 0
+        ;;
+      submitted)
+        observer_manual_only "the Herdr observer command was submitted and is awaiting attachment; refusing to resubmit it" "$run"
+        return 1
         ;;
       creating|ready|staging|staged|submitting)
         return 0
@@ -881,7 +885,7 @@ session_action() {  # internal: <task-id> <run-id> <token>
        && [ "$R_TASK" = "$id" ] \
        && [ "$R_RUN" = "$run" ] \
        && [ "$R_TOKEN" = "$token" ] \
-       && { [ "$R_STATUS" = ready ] || [ "$R_STATUS" = attached ]; }; then
+       && { [ "$R_STATUS" = ready ] || [ "$R_STATUS" = submitted ] || [ "$R_STATUS" = attached ]; }; then
       R_STATUS=attached
       R_EXIT_CODE=
       record_write "$record" || exit 0
