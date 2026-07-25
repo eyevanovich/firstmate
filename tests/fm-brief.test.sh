@@ -132,6 +132,38 @@ EOF
     "direct-PR brief hard-coded a private squash preference as a shared default"
   assert_no_grep '--body-file <path-inside-worktree> --remove-source-branch' "$brief" \
     "direct-PR brief hard-coded a private deletion preference as a shared default"
+
+  home="$TMP_ROOT/gitlab-negated-defaults-home"
+  write_registry "$home"
+  cat > "$home/data/captain.md" <<'EOF'
+# Captain preferences
+
+- GitLab MR defaults: do not squash; do not delete source branch.
+EOF
+  id="brief-gitlab-negated-defaults-a3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep '--body-file <path-inside-worktree>`' "$brief" \
+    "direct-PR brief did not ignore fully negated captain defaults"
+  assert_no_grep '--body-file <path-inside-worktree> --squash' "$brief" \
+    "direct-PR brief inverted a negated squash preference"
+  assert_no_grep '--body-file <path-inside-worktree> --remove-source-branch' "$brief" \
+    "direct-PR brief inverted a negated source-deletion preference"
+
+  home="$TMP_ROOT/gitlab-mixed-defaults-home"
+  write_registry "$home"
+  cat > "$home/data/captain.md" <<'EOF'
+# Captain preferences
+
+- GitLab MR defaults: squash commits; do not remove source branch.
+EOF
+  id="brief-gitlab-mixed-defaults-a3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep '--body-file <path-inside-worktree> --squash`' "$brief" \
+    "direct-PR brief dropped an affirmative squash preference beside a negated option"
+  assert_no_grep '--remove-source-branch' "$brief" \
+    "direct-PR brief inverted a negated source-deletion preference beside an affirmative option"
   pass "fm-brief.sh: GitLab direct-PR commands honor only configured captain defaults"
 }
 

@@ -117,9 +117,21 @@ gitlab_mr_create_flags() {
         '- gitlab mr defaults:'*|'- prefers gitlab merge request'*default*) ;;
         *) continue ;;
       esac
-      case "$normalized" in *squash*) squash=1 ;; esac
       case "$normalized" in
-        *delete*source*branch*|*remove*source*branch*) remove_source=1 ;;
+        *squash*)
+          case "$normalized" in
+            *'do not squash'*|*"don't squash"*|*'does not squash'*|*'no squash'*|*'never squash'*|*'without squash'*|*'disable squash'*) ;;
+            *) squash=1 ;;
+          esac
+          ;;
+      esac
+      case "$normalized" in
+        *delete*source*branch*|*remove*source*branch*)
+          case "$normalized" in
+            *'do not delete source branch'*|*"don't delete source branch"*|*'does not delete source branch'*|*'no delete source branch'*|*'never delete source branch'*|*'without deleting source branch'*|*'disable delete source branch'*|*'do not remove source branch'*|*"don't remove source branch"*|*'does not remove source branch'*|*'no remove source branch'*|*'never remove source branch'*|*'without removing source branch'*|*'disable remove source branch'*) ;;
+            *) remove_source=1 ;;
+          esac
+          ;;
       esac
     done < "$file"
   done
