@@ -132,6 +132,8 @@ It intentionally mirrors the behavior-test baseline in [`.github/workflows/ci.ym
 
 Domain-local preferences for one captain's fleet live locally in each home's `data/captain.md`; it is gitignored and printed in the session-start context digest after `data/projects.md` and optional `data/secondmates.md`.
 Before changing it, inspect the current file and rewrite or prune the matching bullet in place; add a new bullet only for a genuinely new durable preference.
+For generated GitLab direct-PR instructions, `fm-brief.sh` recognizes case-insensitively the established `- Prefers GitLab merge requests to enable both \`Squash commits\` and \`Delete source branch\` by default.` bullet or a `- GitLab MR defaults:` bullet listing only `squash` or `squash commits` and `delete source branch` or `remove source branch`, alone or joined by a comma or `and`.
+Omitting either affirmative option leaves it out of the create request so the GitLab project's own default remains authoritative; any recognized defaults bullet outside that positive grammar fails clearly instead of guessing its intent.
 Shared captain preferences that apply across secondmate domains live only in the primary home's optional `data/captain-shared.md`.
 `secondmate-provisioning` owns its propagation contract, including the required header, read-only secondmate copies, quarantine diagnostics, and the rollout rule that existing homes trim `data/captain.md` by hand after first propagation rather than deleting private content automatically.
 
@@ -269,6 +271,7 @@ The narrow `bin/fm-forge.sh` GitLab adapter derives host and project only from t
 Its named commands cover issue creation, self-claim and release, workflow status, labels, notes, close and reopen, plus equivalent guarded merge-request metadata and lifecycle operations; worker briefs forbid raw `glab` for those mutations.
 Issue mutations require canonical project identity and self-ownership where applicable, while merge-request mutations additionally require the authenticated author, exact local source and trusted target branches, and an unchanged source head.
 Mutation inputs are restricted to canonical URLs or positive IIDs, active existing labels, and regular non-symlink content files inside the worktree, and successful mutations are read back to verify deterministic state.
+`mr-create` accepts explicit source-deletion and squash requests, verifies their effective values from the exact merge-request response for both creation and reuse, and omits unrequested options so project defaults remain intact.
 A passing pipeline authorizes merge only when its SHA matches the current merge-request head; an empty pipeline list remains pending unless the trusted project response explicitly reports its CI/CD builds feature as disabled.
 It deliberately exposes no raw API, project deletion, secret mutation, or repository-content write surface.
 GitLab merge polling uses a hash-registered custom check, while GitHub retains the canonical byte-static PR poll.

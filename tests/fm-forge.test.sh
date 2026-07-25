@@ -69,14 +69,16 @@ if [ "$input_seen" = true ]; then
 fi
 
 emit_mr_json() {
-  local iid=$1 identity=${2:-exact} state=${3:-opened}
+  local iid=$1 identity=${2:-exact} state=${3:-opened} response_kind=${4:-detail}
   local project_id=314 source_project_id=314 target_project_id=314
   local source_branch=fm/fix target_branch=${FM_FAKE_TARGET_BRANCH:-main} merge_sha=null pipeline pipeline_sha head_pipeline
   local author_id=42 author_username=mate
   local title=${FM_FAKE_MR_TITLE:-Ship fix} description=${FM_FAKE_MR_DESCRIPTION:-}
   local draft=${FM_FAKE_MR_DRAFT:-false} remove_source=${FM_FAKE_MR_REMOVE_SOURCE:-false}
-  local force_remove=${FM_FAKE_MR_FORCE_REMOVE_SOURCE:-${FM_FAKE_PROJECT_REMOVE_SOURCE_DEFAULT:-false}}
+  local force_remove=${FM_FAKE_MR_FORCE_REMOVE_SOURCE:-false}
   local should_remove=${FM_FAKE_MR_SHOULD_REMOVE_SOURCE:-$remove_source}
+  local squash=${FM_FAKE_MR_SQUASH:-false}
+  local squash_on_merge=${FM_FAKE_MR_SQUASH_ON_MERGE:-$squash}
   local head_sha=${FM_FAKE_MR_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
   case "$identity" in
     exact) ;;
@@ -107,19 +109,24 @@ emit_mr_json() {
     --arg title "$title" --arg state "$state" --arg source "$source_branch" --arg target "$target_branch" \
     --arg sha "$head_sha" --argjson merge_sha "$merge_sha" --arg description "$description" \
     --argjson draft "$draft" --argjson force_remove "$force_remove" \
-    --argjson should_remove "$should_remove" --argjson author_id "$author_id" \
+    --argjson should_remove "$should_remove" --argjson squash "$squash" \
+    --argjson squash_on_merge "$squash_on_merge" --argjson author_id "$author_id" \
     --arg author_username "$author_username" --argjson head_pipeline "$head_pipeline" '
       {iid:$iid,project_id:$project_id,source_project_id:$source_project_id,
        target_project_id:$target_project_id,title:$title,state:$state,
        web_url:("https://gitlab.com/kisscut-museum/kisscut-platform/-/merge_requests/" + ($iid|tostring)),
        source_branch:$source,target_branch:$target,draft:$draft,
        force_remove_source_branch:$force_remove,should_remove_source_branch:$should_remove,
-       description:$description,
+       squash:$squash,squash_on_merge:$squash_on_merge,description:$description,
        merge_status:"can_be_merged",detailed_merge_status:"mergeable",sha:$sha,
        merge_commit_sha:$merge_sha,labels:["backend"],
        author:{id:$author_id,username:$author_username},assignees:[],head_pipeline:$head_pipeline}')
   [ "${FM_FAKE_MR_OMIT_SHOULD_REMOVE:-false}" != true ] \
     || mr=$(jq 'del(.should_remove_source_branch)' <<< "$mr")
+  [ "$response_kind" != list ] || [ "${FM_FAKE_MR_LIST_OMIT_CREATE_OPTIONS:-false}" != true ] \
+    || mr=$(jq 'del(.should_remove_source_branch,.squash,.squash_on_merge)' <<< "$mr")
+  [ "${FM_FAKE_MR_OMIT_SQUASH_ON_MERGE:-false}" != true ] \
+    || mr=$(jq 'del(.squash_on_merge)' <<< "$mr")
   [ "${FM_FAKE_MR_DESCRIPTION_FALSE:-false}" != true ] \
     || mr=$(jq '.description=false' <<< "$mr")
   printf '%s\n' "$mr"
@@ -153,20 +160,22 @@ if [ "${1:-}" = api ]; then
       if [[ "$endpoint" == *source_branch=missing* ]] || [ "$scenario" = none ]; then
         printf '%s\n' '[]'
       elif [ "$scenario" = ambiguous ]; then
-        printf '[%s,%s]\n' "$(emit_mr_json 5 exact)" "$(emit_mr_json 6 exact)"
+        printf '[%s,%s]\n' "$(emit_mr_json 5 exact opened list)" "$(emit_mr_json 6 exact opened list)"
       else
-        printf '[%s]\n' "$(emit_mr_json 5 "$scenario")"
+        printf '[%s]\n' "$(emit_mr_json 5 "$scenario" opened list)"
       fi
       ;;
     projects/kisscut-museum%2Fkisscut-platform/merge_requests)
       [ "$method" = POST ] || exit 62
       jq -e '
-        keys == ["description","remove_source_branch","source_branch","target_branch","title"]
+        (. | type) == "object"
+        and ((keys - ["description","remove_source_branch","source_branch","squash","target_branch","title"]) | length) == 0
         and (.source_branch | type) == "string"
         and (.target_branch | type) == "string"
         and (.title | type) == "string"
         and (.description | type) == "string"
-        and (.remove_source_branch | type) == "boolean"
+        and ((has("remove_source_branch") | not) or (.remove_source_branch | type) == "boolean")
+        and ((has("squash") | not) or (.squash | type) == "boolean")
       ' <<< "$input" >/dev/null || exit 62
       emit_mr_json 5 "${FM_FAKE_CREATED_MR_IDENTITY:-exact}"
       printf '\n'
@@ -463,7 +472,26 @@ test_mr_create_reuses_only_one_exact_match() {
   out=$(run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix) \
     || fail "exact open merge request should be reused"
   [ "$(jq -r '.mr.already' <<< "$out")" = true ] || fail "exact merge request was not reused"
+  assert_grep 'merge_requests/5' "$LOG" "exact reuse did not read back the exact merge request"
   assert_no_grep '--method POST' "$LOG" "exact reuse created another merge request"
+
+  reset_case
+  out=$(FM_FAKE_PROJECT_REMOVE_SOURCE_DEFAULT=true FM_FAKE_MR_SHOULD_REMOVE_SOURCE=true \
+    FM_FAKE_MR_SQUASH_ON_MERGE=true run_adapter mr-create "$REPO" \
+      --title 'Ship fix' --source fm/fix) \
+    || fail "omitted options should preserve effective project defaults"
+  [ "$(jq -r '.mr.already' <<< "$out")" = true ] \
+    || fail "project-default merge request was not reused"
+  assert_no_grep '--method POST' "$LOG" "project-default reuse created another merge request"
+
+  reset_case
+  out=$(FM_FAKE_MR_LIST_OMIT_CREATE_OPTIONS=true FM_FAKE_MR_SHOULD_REMOVE_SOURCE=true \
+    FM_FAKE_MR_SQUASH_ON_MERGE=true run_adapter mr-create "$REPO" \
+      --title 'Ship fix' --source fm/fix --remove-source-branch --squash) \
+    || fail "exact read-back should tolerate a reduced list response"
+  [ "$(jq -r '.mr.already' <<< "$out")" = true ] \
+    || fail "reduced-list merge request was not reused"
+  assert_no_grep '--method POST' "$LOG" "reduced-list reuse created another merge request"
 
   reset_case
   out=$(FM_FAKE_MR_TITLE='Conflicting title' run_adapter mr-create "$REPO" \
@@ -487,6 +515,14 @@ test_mr_create_reuses_only_one_exact_match() {
   assert_no_grep '--method POST' "$LOG" "live-shape reuse created another merge request"
 
   reset_case
+  out=$(FM_FAKE_MR_FORCE_REMOVE_SOURCE=true FM_FAKE_MR_OMIT_SHOULD_REMOVE=true \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix \
+      --remove-source-branch) \
+    || fail "forced project deletion should prove effective source-branch removal"
+  [ "$(jq -r '.mr.already' <<< "$out")" = true ] \
+    || fail "forced-deletion merge request was not reused"
+
+  reset_case
   out=$(FM_FAKE_MR_FORCE_REMOVE_SOURCE=false FM_FAKE_MR_SHOULD_REMOVE_SOURCE=false \
     run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix \
       --remove-source-branch 2>&1)
@@ -498,12 +534,27 @@ test_mr_create_reuses_only_one_exact_match() {
 
   reset_case
   out=$(FM_FAKE_MR_OMIT_SHOULD_REMOVE=true run_adapter mr-create "$REPO" \
-    --title 'Ship fix' --source fm/fix 2>&1)
+    --title 'Ship fix' --source fm/fix --remove-source-branch 2>&1)
   rc=$?
   expect_code 1 "$rc" "unproven merge-request remove-source intent"
   assert_contains "$out" "(should_remove_source_branch)" \
     "missing remove-source intent diagnostic"
   assert_no_grep '--method POST' "$LOG" "unproven remove-source retry created another merge request"
+
+  reset_case
+  out=$(FM_FAKE_MR_OMIT_SQUASH_ON_MERGE=true FM_FAKE_MR_SQUASH=true \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix --squash) \
+    || fail "legacy squash response should verify through the documented fallback"
+  [ "$(jq -r '.mr.already' <<< "$out")" = true ] \
+    || fail "legacy-squash merge request was not reused"
+
+  reset_case
+  out=$(FM_FAKE_MR_SQUASH=false FM_FAKE_MR_SQUASH_ON_MERGE=false \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix --squash 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "conflicting merge-request squash intent"
+  assert_contains "$out" "(squash_on_merge)" "squash field-only mismatch diagnostic"
+  assert_no_grep '--method POST' "$LOG" "conflicting squash retry created another merge request"
 
   reset_case
   out=$(FM_FAKE_MR_DESCRIPTION_FALSE=true run_adapter mr-create "$REPO" \
@@ -532,11 +583,15 @@ test_mr_create_reuses_only_one_exact_match() {
   assert_no_grep '--method POST' "$LOG" "foreign-authored candidate created another merge request"
 
   reset_case
-  out=$(FM_FAKE_MR_LIST_SCENARIO=none run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix) \
-    || fail "missing merge request should be created"
+  out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_PROJECT_REMOVE_SOURCE_DEFAULT=true \
+    FM_FAKE_MR_SHOULD_REMOVE_SOURCE=true FM_FAKE_MR_SQUASH_ON_MERGE=true \
+    run_adapter mr-create "$REPO" --title 'Ship fix' --source fm/fix) \
+    || fail "missing merge request should be created with project defaults preserved"
   [ "$(jq -r '.mr.already' <<< "$out")" = false ] || fail "new merge request reported reuse"
   assert_grep '--method POST --input - --header Content-Type: application/json' \
     "$LOG" "merge-request creation JSON media type"
+  assert_grep 'input={"source_branch":"fm/fix","target_branch":"main","title":"Ship fix","description":""}' \
+    "$LOG" "merge-request creation did not omit unrequested project-default options"
 
   reset_case
   printf 'Retry body\n\n' > "$REPO/mr-retry-body.md"
@@ -587,13 +642,16 @@ test_mr_create_reuses_only_one_exact_match() {
   printf 'Requested body\n\n' > "$REPO/mr-create-body.md"
   out=$(FM_FAKE_MR_LIST_SCENARIO=none FM_FAKE_MR_TITLE='Draft: Detailed fix' \
     FM_FAKE_MR_DESCRIPTION=$'Requested body\n\n' FM_FAKE_MR_DRAFT=true FM_FAKE_MR_REMOVE_SOURCE=true \
+    FM_FAKE_MR_SQUASH=true FM_FAKE_MR_SQUASH_ON_MERGE=true \
     run_adapter mr-create "$REPO" --title 'Detailed fix' --source fm/fix \
-      --body-file "$REPO/mr-create-body.md" --draft --remove-source-branch) \
+      --body-file "$REPO/mr-create-body.md" --draft --remove-source-branch --squash) \
     || fail "requested merge-request metadata should verify after creation"
   [ "$(jq -r '.mr.already' <<< "$out")" = false ] \
     || fail "verified new merge request reported reuse"
   assert_grep '"description":"Requested body\n\n"' "$LOG" \
     "merge-request POST did not preserve trailing body newlines"
+  assert_grep '"remove_source_branch":true,"squash":true' "$LOG" \
+    "merge-request POST did not request source deletion and squash"
 
   reset_case
   out=$(FM_FAKE_MR_LIST_SCENARIO=none \
