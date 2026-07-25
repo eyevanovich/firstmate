@@ -16,8 +16,9 @@
 # source branch, and the trusted project's target branch before any action.
 # MR mutations additionally require the authenticated user to be the author and
 # preserve the source head SHA; merge remains exclusively guarded as below.
-# MR creation and reuse verify the exact requested metadata and the MR-specific
-# source-branch removal intent; project removal policy and defaults are not substitutes.
+# MR creation and reuse verify exact requested metadata after an exact-MR read-back.
+# Optional deletion and squash requests are verified against effective MR behavior;
+# omitted options preserve GitLab project defaults instead of asserting false.
 # Verification failures report only mismatched field names.
 # Body and note files must be regular non-symlink files inside the worktree.
 # JSON mutations use glab api --input - with Content-Type: application/json;
@@ -53,7 +54,7 @@
 #     --status blocked|deferred|ready
 #   fm-forge.sh mr-create <repo> --title <text> --source <branch>
 #     [--target <branch>] [--body-file <file>] [--draft]
-#     [--remove-source-branch]
+#     [--remove-source-branch] [--squash]
 #   fm-forge.sh mr-view <repo> <iid|canonical-url> [--target <branch>]
 #   fm-forge.sh mr-find <repo> <source-branch> [--target <branch>]
 #   fm-forge.sh mr-claim <repo> <iid|canonical-url> [--target <branch>]
@@ -652,9 +653,9 @@ mr_author_is_self() {
 }
 
 mr_create_state_mismatches() {
-  local raw=$1 head=$2 title=$3 description_json=$4 draft=$5 remove_source=$6
+  local raw=$1 head=$2 title=$3 description_json=$4 draft=$5 remove_source=$6 squash=$7
   jq -r --arg head "$head" --arg title "$title" --argjson description "$description_json" \
-    --argjson draft "$draft" --argjson remove_source "$remove_source" \
+    --argjson draft "$draft" --arg remove_source "$remove_source" --arg squash "$squash" \
     --argjson user_id "$FM_GITLAB_USER_ID" --arg username "$FM_GITLAB_USERNAME" '
       def draft_state:
         if (.draft | type) == "boolean" then .draft
@@ -664,15 +665,27 @@ mr_create_state_mismatches() {
         if (.description | type) == "string" then .description
         elif .description == null and has("description") then ""
         else null end;
+      def remove_source_state:
+        if (.force_remove_source_branch | type) == "boolean"
+          and .force_remove_source_branch
+        then true
+        elif (.should_remove_source_branch | type) == "boolean"
+        then .should_remove_source_branch
+        else null end;
+      def squash_state:
+        if (.squash_on_merge | type) == "boolean" then .squash_on_merge
+        elif (.squash | type) == "boolean" then .squash
+        else null end;
       [
         if .state == "opened" then empty else "state" end,
         if .sha == $head then empty else "sha" end,
         if .title == $title then empty else "title" end,
         if description_state == $description then empty else "description" end,
         if draft_state == $draft then empty else "draft" end,
-        if ((.should_remove_source_branch | type) == "boolean"
-          and .should_remove_source_branch == $remove_source)
+        if $remove_source == "unspecified" or remove_source_state == true
           then empty else "should_remove_source_branch" end,
+        if $squash == "unspecified" or squash_state == true
+          then empty else "squash_on_merge" end,
         if .author.id == $user_id then empty else "author.id" end,
         if .author.username == $username then empty else "author.username" end
       ] | join(",")
@@ -1267,7 +1280,8 @@ cmd_mr_find() {
 }
 
 cmd_mr_create() {
-  local repo=$1 title='' source='' target='' body_file='' body_json='""' draft=false remove_source=false
+  local repo=$1 title='' source='' target='' body_file='' body_json='""' draft=false
+  local remove_source=unspecified squash=unspecified
   local pid encoded encoded_target existing raw verified payload branch_raw remote_head count iid checked_out
   local expected_title head
   shift
@@ -1295,6 +1309,7 @@ cmd_mr_create() {
         ;;
       --draft) draft=true; shift ;;
       --remove-source-branch) remove_source=true; shift ;;
+      --squash) squash=true; shift ;;
       *) fail "unknown mr-create argument: $1" 2 ;;
     esac
   done
@@ -1340,9 +1355,11 @@ cmd_mr_create() {
       || fail "merge-request identity is unavailable"
     mr_identity_valid "$raw" "$iid" "$source" "$target" \
       || fail "merge-request identity does not match the trusted repository and branches"
+    verified=$(checked_mr_raw "$iid" "$source" "$target") \
+      || fail "matching merge-request identity could not be read back"
     require_mr_create_state "matching merge request does not match requested head and metadata" \
-      "$raw" "$head" "$expected_title" "$body_json" "$draft" "$remove_source"
-    emit_mr "$raw" true
+      "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" "$squash"
+    emit_mr "$verified" true
     return 0
   fi
 
@@ -1358,9 +1375,10 @@ cmd_mr_create() {
     || fail "trusted source branch head does not match checked-out HEAD"
 
   payload=$(jq -cn --arg source "$source" --arg target "$target" --arg title "$expected_title" \
-    --argjson description "$body_json" --argjson remove_source "$remove_source" '
-      {source_branch:$source,target_branch:$target,title:$title,description:$description,
-       remove_source_branch:$remove_source}')
+    --argjson description "$body_json" --arg remove_source "$remove_source" --arg squash "$squash" '
+      {source_branch:$source,target_branch:$target,title:$title,description:$description}
+      + (if $remove_source == "true" then {remove_source_branch:true} else {} end)
+      + (if $squash == "true" then {squash:true} else {} end)')
   raw=$(printf '%s' "$payload" \
     | gitlab_json_api "projects/$pid/merge_requests" --method POST --input -)
   iid=$(mr_iid_from_json <<< "$raw") \
@@ -1370,7 +1388,7 @@ cmd_mr_create() {
   verified=$(checked_mr_raw "$iid" "$source" "$target") \
     || fail "created merge-request identity could not be read back"
   require_mr_create_state "created merge-request head and metadata verification" \
-    "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source"
+    "$verified" "$head" "$expected_title" "$body_json" "$draft" "$remove_source" "$squash"
   emit_mr "$verified"
 }
 

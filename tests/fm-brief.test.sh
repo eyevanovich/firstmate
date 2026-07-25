@@ -91,6 +91,50 @@ test_gitlab_mutations_use_guarded_adapter() {
   pass "fm-brief.sh: ship and scout work use named guarded GitLab mutation commands"
 }
 
+test_gitlab_direct_pr_honors_captain_defaults() {
+  local home id brief
+  home="$TMP_ROOT/gitlab-captain-defaults-home"
+  write_registry "$home"
+  cat > "$home/data/captain.md" <<'EOF'
+# Captain preferences
+
+- Prefers GitLab merge requests to enable both `Squash commits` and `Delete source branch` by default.
+EOF
+  id="brief-gitlab-defaults-a3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep '--body-file <path-inside-worktree> --squash --remove-source-branch`' "$brief" \
+    "direct-PR brief did not render the captain GitLab defaults into the guarded create command"
+  assert_grep "creation options in that generated command come from affirmative GitLab merge-request defaults" "$brief" \
+    "direct-PR brief did not explain the local source of its GitLab options"
+
+  home="$TMP_ROOT/gitlab-shared-defaults-home"
+  write_registry "$home"
+  cat > "$home/data/captain-shared.md" <<'EOF'
+# Shared captain preferences
+
+- GitLab MR defaults: squash, remove source branch.
+EOF
+  id="brief-gitlab-shared-defaults-a3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep '--body-file <path-inside-worktree> --squash --remove-source-branch`' "$brief" \
+    "direct-PR brief did not render shared captain GitLab defaults"
+
+  home="$TMP_ROOT/gitlab-no-defaults-home"
+  write_registry "$home"
+  id="brief-gitlab-no-defaults-a3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep '--body-file <path-inside-worktree>`' "$brief" \
+    "direct-PR brief without a captain preference did not preserve GitLab project defaults"
+  assert_no_grep '--body-file <path-inside-worktree> --squash' "$brief" \
+    "direct-PR brief hard-coded a private squash preference as a shared default"
+  assert_no_grep '--body-file <path-inside-worktree> --remove-source-branch' "$brief" \
+    "direct-PR brief hard-coded a private deletion preference as a shared default"
+  pass "fm-brief.sh: GitLab direct-PR commands honor only configured captain defaults"
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -369,6 +413,7 @@ test_script_parses
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_gitlab_mutations_use_guarded_adapter
+test_gitlab_direct_pr_honors_captain_defaults
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording

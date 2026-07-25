@@ -30,7 +30,9 @@
 # (data/projects.md via fm-project-mode.sh; see the project-management skill
 # and AGENTS.md task lifecycle):
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> captain merge (default)
-#   direct-PR    implement -> push + open GitHub PR or GitLab MR (no pipeline) -> captain merge
+#   direct-PR    implement -> push + open GitHub PR or GitLab MR (no pipeline) -> captain merge;
+#                GitLab creation flags honor affirmative MR defaults in the active
+#                home's data/captain.md and data/captain-shared.md
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
@@ -103,6 +105,26 @@ shell_quote() {
   printf "'"
   printf '%s' "$1" | sed "s/'/'\\\\''/g"
   printf "'"
+}
+
+gitlab_mr_create_flags() {
+  local file line normalized squash=0 remove_source=0
+  for file in "$DATA/captain-shared.md" "$DATA/captain.md"; do
+    [ -f "$file" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      normalized=$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')
+      case "$normalized" in
+        '- gitlab mr defaults:'*|'- prefers gitlab merge request'*default*) ;;
+        *) continue ;;
+      esac
+      case "$normalized" in *squash*) squash=1 ;; esac
+      case "$normalized" in
+        *delete*source*branch*|*remove*source*branch*) remove_source=1 ;;
+      esac
+    done < "$file"
+  done
+  [ "$squash" -eq 0 ] || printf '%s' ' --squash'
+  [ "$remove_source" -eq 0 ] || printf '%s' ' --remove-source-branch'
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
@@ -282,13 +304,15 @@ case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+    GITLAB_MR_CREATE_FLAGS=$(gitlab_mr_create_flags)
     DOD=$(cat <<EOF
 # Definition of done
 This project ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open the review request.
 For GitHub use \`gh-axi\`.
-For GitLab write the review description to a temporary regular file inside this worktree, run \`$FM_ROOT/bin/fm-forge.sh mr-create "\$(git rev-parse --show-toplevel)" --title "<concise title>" --source "fm/$ID" --body-file <path-inside-worktree>\`, then remove that temporary file.
+For GitLab write the review description to a temporary regular file inside this worktree, run \`$FM_ROOT/bin/fm-forge.sh mr-create "\$(git rev-parse --show-toplevel)" --title "<concise title>" --source "fm/$ID" --body-file <path-inside-worktree>$GITLAB_MR_CREATE_FLAGS\`, then remove that temporary file.
+The explicit GitLab creation options in that generated command come from affirmative GitLab merge-request defaults in the active home captain-preference files; do not drop them.
 Then append \`done: PR {full review URL}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
