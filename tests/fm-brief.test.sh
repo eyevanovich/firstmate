@@ -92,7 +92,7 @@ test_gitlab_mutations_use_guarded_adapter() {
 }
 
 test_gitlab_direct_pr_honors_captain_defaults() {
-  local home id brief
+  local home id brief invalid_preference out rc index
   home="$TMP_ROOT/gitlab-captain-defaults-home"
   write_registry "$home"
   cat > "$home/data/captain.md" <<'EOF'
@@ -133,37 +133,23 @@ EOF
   assert_no_grep '--body-file <path-inside-worktree> --remove-source-branch' "$brief" \
     "direct-PR brief hard-coded a private deletion preference as a shared default"
 
-  home="$TMP_ROOT/gitlab-negated-defaults-home"
-  write_registry "$home"
-  cat > "$home/data/captain.md" <<'EOF'
-# Captain preferences
-
-- GitLab MR defaults: do not squash; do not delete source branch.
-EOF
-  id="brief-gitlab-negated-defaults-a3"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_grep '--body-file <path-inside-worktree>`' "$brief" \
-    "direct-PR brief did not ignore fully negated captain defaults"
-  assert_no_grep '--body-file <path-inside-worktree> --squash' "$brief" \
-    "direct-PR brief inverted a negated squash preference"
-  assert_no_grep '--body-file <path-inside-worktree> --remove-source-branch' "$brief" \
-    "direct-PR brief inverted a negated source-deletion preference"
-
-  home="$TMP_ROOT/gitlab-mixed-defaults-home"
-  write_registry "$home"
-  cat > "$home/data/captain.md" <<'EOF'
-# Captain preferences
-
-- GitLab MR defaults: squash commits; do not remove source branch.
-EOF
-  id="brief-gitlab-mixed-defaults-a3"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_grep '--body-file <path-inside-worktree> --squash`' "$brief" \
-    "direct-PR brief dropped an affirmative squash preference beside a negated option"
-  assert_no_grep '--remove-source-branch' "$brief" \
-    "direct-PR brief inverted a negated source-deletion preference beside an affirmative option"
+  index=1
+  for invalid_preference in \
+    '- GitLab MR defaults: do not squash; do not delete source branch.' \
+    '- GitLab MR defaults: squash disabled.' \
+    '- GitLab MR defaults: squash: false.'
+  do
+    home="$TMP_ROOT/gitlab-invalid-defaults-$index"
+    write_registry "$home"
+    printf '# Captain preferences\n\n%s\n' "$invalid_preference" > "$home/data/captain.md"
+    id="brief-gitlab-invalid-defaults-$index"
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj 2>&1)
+    rc=$?
+    expect_code 1 "$rc" "unsupported GitLab MR defaults should fail"
+    assert_contains "$out" "error: unsupported GitLab MR defaults in $home/data/captain.md: $invalid_preference" \
+      "unsupported GitLab MR defaults did not identify the invalid preference"
+    index=$((index + 1))
+  done
   pass "fm-brief.sh: GitLab direct-PR commands honor only configured captain defaults"
 }
 

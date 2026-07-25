@@ -108,29 +108,39 @@ shell_quote() {
 }
 
 gitlab_mr_create_flags() {
-  local file line normalized squash=0 remove_source=0
+  local file line normalized preference squash=0 remove_source=0
   for file in "$DATA/captain-shared.md" "$DATA/captain.md"; do
     [ -f "$file" ] || continue
     while IFS= read -r line || [ -n "$line" ]; do
-      normalized=$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')
+      normalized=$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]' | tr -d '`')
       case "$normalized" in
         '- gitlab mr defaults:'*|'- prefers gitlab merge request'*default*) ;;
         *) continue ;;
       esac
+      normalized=${normalized%.}
       case "$normalized" in
-        *squash*)
-          case "$normalized" in
-            *'do not squash'*|*"don't squash"*|*'does not squash'*|*'no squash'*|*'never squash'*|*'without squash'*|*'disable squash'*) ;;
-            *) squash=1 ;;
+        '- prefers gitlab merge requests to enable both squash commits and delete source branch by default')
+          squash=1
+          remove_source=1
+          ;;
+        '- gitlab mr defaults:'*)
+          preference=${normalized#'- gitlab mr defaults: '}
+          case "$preference" in
+            squash|'squash commits') squash=1 ;;
+            'delete source branch'|'remove source branch') remove_source=1 ;;
+            'squash, delete source branch'|'squash, remove source branch'|'squash commits, delete source branch'|'squash commits, remove source branch'|'squash and delete source branch'|'squash and remove source branch'|'squash commits and delete source branch'|'squash commits and remove source branch'|'delete source branch, squash'|'remove source branch, squash'|'delete source branch, squash commits'|'remove source branch, squash commits'|'delete source branch and squash'|'remove source branch and squash'|'delete source branch and squash commits'|'remove source branch and squash commits')
+              squash=1
+              remove_source=1
+              ;;
+            *)
+              echo "error: unsupported GitLab MR defaults in $file: $line" >&2
+              return 1
+              ;;
           esac
           ;;
-      esac
-      case "$normalized" in
-        *delete*source*branch*|*remove*source*branch*)
-          case "$normalized" in
-            *'do not delete source branch'*|*"don't delete source branch"*|*'does not delete source branch'*|*'no delete source branch'*|*'never delete source branch'*|*'without deleting source branch'*|*'disable delete source branch'*|*'do not remove source branch'*|*"don't remove source branch"*|*'does not remove source branch'*|*'no remove source branch'*|*'never remove source branch'*|*'without removing source branch'*|*'disable remove source branch'*) ;;
-            *) remove_source=1 ;;
-          esac
+        *)
+          echo "error: unsupported GitLab MR defaults in $file: $line" >&2
+          return 1
           ;;
       esac
     done < "$file"

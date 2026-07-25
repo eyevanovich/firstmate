@@ -132,8 +132,8 @@ It intentionally mirrors the behavior-test baseline in [`.github/workflows/ci.ym
 
 Domain-local preferences for one captain's fleet live locally in each home's `data/captain.md`; it is gitignored and printed in the session-start context digest after `data/projects.md` and optional `data/secondmates.md`.
 Before changing it, inspect the current file and rewrite or prune the matching bullet in place; add a new bullet only for a genuinely new durable preference.
-For generated GitLab direct-PR instructions, `fm-brief.sh` recognizes case-insensitively an affirmative bullet beginning `- GitLab MR defaults:` or `- Prefers GitLab merge request` and containing `default`; `squash` adds `--squash`, while `delete source branch` or `remove source branch` adds `--remove-source-branch`.
-Omitting either affirmative option leaves it out of the create request so the GitLab project's own default remains authoritative; to disable an option, remove it from the affirmative preference rather than adding negative prose, which the parser intentionally ignores.
+For generated GitLab direct-PR instructions, `fm-brief.sh` recognizes case-insensitively the established `- Prefers GitLab merge requests to enable both \`Squash commits\` and \`Delete source branch\` by default.` bullet or a `- GitLab MR defaults:` bullet listing only `squash` or `squash commits` and `delete source branch` or `remove source branch`, alone or joined by a comma or `and`.
+Omitting either affirmative option leaves it out of the create request so the GitLab project's own default remains authoritative; any recognized defaults bullet outside that positive grammar fails clearly instead of guessing its intent.
 Shared captain preferences that apply across secondmate domains live only in the primary home's optional `data/captain-shared.md`.
 `secondmate-provisioning` owns its propagation contract, including the required header, read-only secondmate copies, quarantine diagnostics, and the rollout rule that existing homes trim `data/captain.md` by hand after first propagation rather than deleting private content automatically.
 
