@@ -6,6 +6,8 @@ set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+. "$ROOT/bin/fm-pr-lib.sh"
 fm_git_identity fmtest fmtest@example.invalid
 
 TMP=$(fm_test_tmproot fm-gitlab-review-tests)
@@ -121,6 +123,12 @@ run_with_env() {
     GLAB_ENABLE_CI_AUTOLOGIN=true CI_JOB_TOKEN=TEST_CI_TOKEN PATH="$FAKEBIN:$PATH" "$@"
 }
 
+run_watcher_bounded() {
+  run_with_env env FM_CHECK_INTERVAL=0 FM_WATCH_POLL=1 FM_WATCH_STALE_SECONDS=999999 \
+    FM_HEARTBEAT_SECONDS=999999 FM_WATCH_LOCK_PAUSE_SECONDS=0 FM_CHECK_TIMEOUT=3 \
+    perl -e 'alarm 20; exec @ARGV' "$ROOT/bin/fm-watch.sh"
+}
+
 test_check_records_head_and_registers_custom_poll() {
   local out mode
   : > "$LOG"
@@ -144,6 +152,68 @@ test_check_records_head_and_registers_custom_poll() {
   out=$(run_with_env "$STATE/$ID.check.sh") || fail "merged GitLab poll should not fail"
   [ "$out" = merged ] || fail "merged GitLab poll should emit exactly merged"
   pass "GitLab review metadata and authenticated merge poll are recorded"
+}
+
+test_gitlab_merged_poll_retires_once() {
+  local first second meta_before tamper_id trust_before rc
+  rm -f "$MERGED" "$STATE/z-stop.check.sh" "$STATE/z-stop.check-trust"
+  run_with_env "$ROOT/bin/fm-pr-check.sh" "$ID" "$URL" --target "$TARGET_BRANCH" >/dev/null 2>/dev/null \
+    || fail "GitLab poll rearm should succeed"
+  meta_before=$(shasum -a 256 "$STATE/$ID.meta")
+  : > "$MERGED"
+
+  run_watcher_bounded > "$TMP/watch-1.out" 2> "$TMP/watch-1.err"
+  rc=$?
+  [ "$rc" -eq 0 ] || fail "merged GitLab watcher failed: $(cat "$TMP/watch-1.err")"
+  first=$(cat "$TMP/watch-1.out")
+  case "$first" in check:*"$ID.check.sh":*merged) ;; *) fail "GitLab terminal notification was not preserved: $first" ;; esac
+  assert_absent "$STATE/$ID.check.sh" "GitLab merged poll check was not retired"
+  assert_absent "$STATE/$ID.check-trust" "GitLab merged poll trust was not retired"
+  assert_absent "$STATE/$ID.pr-poll-retirement" "GitLab retirement receipt was not removed"
+  [ "$(shasum -a 256 "$STATE/$ID.meta")" = "$meta_before" ] \
+    || fail "GitLab retirement changed canonical review metadata"
+
+  printf '#!/usr/bin/env bash\nprintf "stop-cycle\\n"\n' > "$STATE/z-stop.check.sh"
+  chmod 0700 "$STATE/z-stop.check.sh"
+  run_with_env "$ROOT/bin/fm-check-register.sh" z-stop >/dev/null \
+    || fail "could not register GitLab retirement control check"
+  rm -f "$STATE/.last-check"
+  run_watcher_bounded > "$TMP/watch-2.out" 2> "$TMP/watch-2.err"
+  rc=$?
+  [ "$rc" -eq 0 ] || fail "second GitLab watcher cycle failed: $(cat "$TMP/watch-2.err")"
+  second=$(cat "$TMP/watch-2.out")
+  case "$second" in check:*z-stop.check.sh:*stop-cycle) ;; *) fail "retired GitLab poll did not yield to control check: $second" ;; esac
+  ! grep -F "$ID.check.sh: merged" "$TMP/watch-2.out" >/dev/null \
+    || fail "retired GitLab poll emitted a second terminal notification"
+  [ "$(grep -c $'\tcheck\t.*gitlab-x1.check.sh\t' "$STATE/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
+    || fail "GitLab poll did not queue exactly one terminal notification"
+  rm -f "$STATE/z-stop.check.sh" "$STATE/z-stop.check-trust"
+
+  tamper_id=gitlab-trust-tamper
+  fm_write_meta "$STATE/$tamper_id.meta" \
+    "window=fm-$tamper_id" \
+    "worktree=$REPO" \
+    "project=$REPO" \
+    'kind=ship' \
+    'mode=direct-PR'
+  rm -f "$MERGED"
+  run_with_env "$ROOT/bin/fm-pr-check.sh" "$tamper_id" "$URL" --target "$TARGET_BRANCH" >/dev/null 2>/dev/null \
+    || fail "GitLab trust-tamper fixture should arm"
+  fm_pr_poll_snapshot_capture "$STATE" "$tamper_id" "$ROOT/bin/fm-pr-poll.sh" \
+    || fail "could not capture GitLab trust snapshot"
+  fm_pr_poll_retirement_publish "$STATE" "$tamper_id" "$ROOT/bin/fm-pr-poll.sh" merged \
+    || fail "could not publish GitLab trust-tamper receipt"
+  printf 'tamper\n' >> "$STATE/$tamper_id.check-trust"
+  trust_before=$(shasum -a 256 "$STATE/$tamper_id.check-trust")
+  fm_pr_poll_retirement_recover_one "$STATE" "$tamper_id" "$ROOT/bin/fm-pr-poll.sh" \
+    && fail "tampered GitLab trust authorized poll removal"
+  [ "$(shasum -a 256 "$STATE/$tamper_id.check-trust")" = "$trust_before" ] \
+    || fail "failed GitLab trust recovery changed trust evidence"
+  assert_present "$STATE/$tamper_id.check.sh" "failed GitLab trust recovery removed the check"
+  assert_present "$STATE/$tamper_id.pr-poll-retirement" "failed GitLab trust recovery removed the receipt"
+  rm -f "$STATE/$tamper_id.check.sh" "$STATE/$tamper_id.check-trust" \
+    "$STATE/$tamper_id.pr-poll-retirement" "$STATE/$tamper_id.meta"
+  pass "GitLab merged polls retire once while trust tampering preserves evidence"
 }
 
 test_guarded_merge_uses_narrow_adapter() {
@@ -248,6 +318,7 @@ test_merged_gitlab_work_is_safe_to_clean() {
 }
 
 test_check_records_head_and_registers_custom_poll
+test_gitlab_merged_poll_retires_once
 test_open_gitlab_review_refuses_tree_only_cleanup
 test_gitlab_cleanup_proof_has_no_structural_bypass
 test_guarded_merge_uses_narrow_adapter
