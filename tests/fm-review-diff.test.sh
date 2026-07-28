@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# Tests for bin/fm-review-diff.sh: when a task has an open PR recorded in meta,
-# the review diff must compare the authoritative base against the PR head, not a
-# stale local branch left behind after no-mistakes fix rounds push to the PR.
-#
-# Matrix:
-#   (a) pr= + reachable pr_head= -> diff uses PR head, not the lagging local branch
-#   (b) pr= without pr_head= -> fetch refs/pull/<n>/head and diff that
-#   (c) pr= absent -> unchanged worktree-branch diff
-#   (d) pr= present but PR head unreachable -> fallback to local branch + warning
+# Counterfactual tests for bin/fm-review-diff.sh review-head precedence and
+# provider identity. A fresh provider ref must defeat a stale reachable
+# pr_head=, while offline metadata and local-branch fallbacks remain bounded.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -16,6 +10,14 @@ fm_git_identity fmtest fmtest@example.invalid
 
 REVIEW_DIFF="$ROOT/bin/fm-review-diff.sh"
 TMP_ROOT=$(fm_test_tmproot fm-review-diff-tests)
+
+set_origin_identity() {
+  local case_dir=$1 host=$2 project=$3 url
+  url="https://$host/$project"
+  git -C "$case_dir/project" remote set-url origin "$url"
+  git -C "$case_dir/project" config --unset-all "url.$case_dir/origin.git.insteadOf" 2>/dev/null || true
+  git -C "$case_dir/project" config --add "url.$case_dir/origin.git.insteadOf" "$url"
+}
 
 make_case() {
   local name=$1 case_dir
@@ -34,7 +36,7 @@ make_case() {
   git clone -q "$case_dir/origin.git" "$case_dir/project"
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
   git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
-
+  set_origin_identity "$case_dir" github.com example/repo
   touch "$case_dir/state/.last-watcher-beat"
   printf '%s\n' "$case_dir"
 }
@@ -49,19 +51,28 @@ write_task_meta() {
     "$@"
 }
 
-stale_and_pr_commits() {
+stale_and_review_commits() {
   local case_dir=$1
   printf 'stale-local\n' > "$case_dir/wt/feature.txt"
   git -C "$case_dir/wt" add feature.txt
   git -C "$case_dir/wt" commit -qm "stale local branch"
+  STALE_SHA=$(git -C "$case_dir/wt" rev-parse HEAD)
 
-  git -C "$case_dir/wt" checkout -q -b pr-head-tmp
-  printf 'pr-fixed\n' > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" checkout -q -b review-head-tmp
+  printf 'review-fixed\n' > "$case_dir/wt/feature.txt"
   git -C "$case_dir/wt" add feature.txt
-  git -C "$case_dir/wt" commit -qm "pipeline fix on PR"
-  PR_SHA=$(git -C "$case_dir/wt" rev-parse HEAD)
-
+  git -C "$case_dir/wt" commit -qm "pipeline fix on review"
+  REVIEW_SHA=$(git -C "$case_dir/wt" rev-parse HEAD)
   git -C "$case_dir/wt" checkout -q fm/task-x1
+}
+
+push_review_head() {
+  local case_dir=$1 provider=$2
+  case "$provider" in
+    github) git -C "$case_dir/wt" push -q origin "review-head-tmp:refs/pull/9/head" ;;
+    gitlab) git -C "$case_dir/wt" push -q origin "review-head-tmp:refs/merge-requests/9/head" ;;
+    *) fail "unknown review provider fixture" ;;
+  esac
 }
 
 run_review_diff() {
@@ -69,96 +80,178 @@ run_review_diff() {
   shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_FORGE_HOSTS_FILE="$case_dir/forge-hosts" \
     "$REVIEW_DIFF" "$@"
 }
 
-test_pr_meta_uses_pr_head_not_stale_local() {
-  local case_dir out
-  case_dir=$(make_case pr-head-sha)
-  stale_and_pr_commits "$case_dir"
+assert_review_diff() {
+  local out=$1 label=$2
+  assert_contains "$out" '+review-fixed' "$label: diff should use the current review head"
+  assert_not_contains "$out" 'stale-local' "$label: stale reachable metadata must not win"
+}
+
+test_fresh_github_head_defeats_stale_recorded_head() {
+  local case_dir out private_head fetch_head
+  case_dir=$(make_case github-fresh)
+  stale_and_review_commits "$case_dir"
+  push_review_head "$case_dir" github
   write_task_meta "$case_dir" \
     "pr=https://github.com/example/repo/pull/9" \
-    "pr_head=$PR_SHA"
+    "pr_head=$STALE_SHA"
 
-  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
-
-  assert_contains "$out" '+pr-fixed' "pr-head-sha: diff should show the PR head content"
-  assert_not_contains "$out" 'stale-local' "pr-head-sha: diff must not use the stale local branch"
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr") \
+    || fail "fresh GitHub review diff failed: $(cat "$case_dir/stderr")"
+  assert_review_diff "$out" github-fresh
+  private_head=$(git -C "$case_dir/wt" rev-parse refs/fm-review/github/9/head)
+  fetch_head=$(git -C "$case_dir/wt" rev-parse FETCH_HEAD)
+  [ "$private_head" = "$REVIEW_SHA" ] || fail "GitHub review head was not isolated in the private ref"
+  [ "$fetch_head" != "$private_head" ] || fail "base fetch clobbered the review comparison through FETCH_HEAD"
   assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
-    "pr-head-sha: should not warn when pr_head is reachable"
-  pass "fm-review-diff uses recorded pr_head instead of the lagging local branch"
+    "github-fresh: successful live fetch should not warn"
+  pass "fresh GitHub review heads defeat stale reachable recorded heads"
 }
 
-test_pr_meta_fetches_pull_head_without_recorded_sha() {
+test_fresh_gitlab_head_defeats_stale_recorded_head() {
   local case_dir out
-  case_dir=$(make_case pr-fetch)
-  stale_and_pr_commits "$case_dir"
-  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/pull/9/head"
-  write_task_meta "$case_dir" "pr=https://github.com/example/repo/pull/9"
+  case_dir=$(make_case gitlab-fresh)
+  set_origin_identity "$case_dir" gitlab.com example/repo
+  stale_and_review_commits "$case_dir"
+  push_review_head "$case_dir" gitlab
+  write_task_meta "$case_dir" \
+    "pr=https://gitlab.com/example/repo/-/merge_requests/9" \
+    "pr_head=$STALE_SHA"
 
-  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
-
-  assert_contains "$out" '+pr-fixed' "pr-fetch: diff should use fetched PR head"
-  assert_not_contains "$out" 'stale-local' "pr-fetch: diff must not use the stale local branch"
-  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
-    "pr-fetch: should not warn when fetch succeeds"
-  pass "fm-review-diff fetches refs/pull/<n>/head when pr_head= is absent"
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr") \
+    || fail "fresh GitLab review diff failed: $(cat "$case_dir/stderr")"
+  assert_review_diff "$out" gitlab-fresh
+  [ "$(git -C "$case_dir/wt" rev-parse refs/fm-review/gitlab/9/head)" = "$REVIEW_SHA" ] \
+    || fail "GitLab review head was not isolated in the private ref"
+  pass "fresh GitLab review heads defeat stale reachable recorded heads"
 }
 
-test_gitlab_meta_fetches_merge_request_head_without_recorded_sha() {
+test_trusted_self_hosted_gitlab_head() {
   local case_dir out
-  case_dir=$(make_case gitlab-mr-fetch)
-  stale_and_pr_commits "$case_dir"
-  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/merge-requests/9/head"
-  write_task_meta "$case_dir" "pr=https://gitlab.com/example/repo/-/merge_requests/9"
+  case_dir=$(make_case gitlab-self-hosted)
+  set_origin_identity "$case_dir" gitlab.example.test group/subgroup/repo
+  printf 'gitlab gitlab.example.test\n' > "$case_dir/forge-hosts"
+  stale_and_review_commits "$case_dir"
+  push_review_head "$case_dir" gitlab
+  write_task_meta "$case_dir" \
+    "pr=https://gitlab.example.test/group/subgroup/repo/-/merge_requests/9" \
+    "pr_head=$STALE_SHA"
 
-  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
-
-  assert_contains "$out" '+pr-fixed' "gitlab-mr-fetch: diff should use fetched MR head"
-  assert_not_contains "$out" 'stale-local' "gitlab-mr-fetch: diff must not use the stale local branch"
-  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
-    "gitlab-mr-fetch: should not warn when fetch succeeds"
-  pass "fm-review-diff fetches refs/merge-requests/<n>/head for GitLab"
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr") \
+    || fail "trusted self-hosted GitLab review diff failed: $(cat "$case_dir/stderr")"
+  assert_review_diff "$out" gitlab-self-hosted
+  pass "trusted self-hosted GitLab identity can fetch the current review head"
 }
 
-test_no_pr_meta_uses_local_branch() {
+test_remote_unavailability_falls_back_to_recorded_head() {
   local case_dir out
-  case_dir=$(make_case no-pr-meta)
-  stale_and_pr_commits "$case_dir"
-  write_task_meta "$case_dir"
-
-  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
-
-  assert_contains "$out" '+stale-local' "no-pr-meta: diff should still use the local branch"
-  assert_not_contains "$out" '+pr-fixed' "no-pr-meta: diff must not jump to the unpushed PR commit"
-  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
-    "no-pr-meta: no warning without pr= in meta"
-  pass "fm-review-diff without pr= keeps the worktree-branch diff"
-}
-
-test_unreachable_pr_head_falls_back_with_warning() {
-  local case_dir out err
-  case_dir=$(make_case fetch-fallback)
-  stale_and_pr_commits "$case_dir"
+  case_dir=$(make_case recorded-fallback)
+  stale_and_review_commits "$case_dir"
   git -C "$case_dir/wt" remote remove origin
   write_task_meta "$case_dir" \
     "pr=https://github.com/example/repo/pull/9" \
-    "pr_head=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    "pr_head=$REVIEW_SHA"
 
-  set +e
-  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
-  set -e
-  err=$(cat "$case_dir/stderr")
-
-  assert_contains "$err" 'warning: review head unavailable; diff may lag the open review' \
-    "fetch-fallback: must warn when the review head cannot be resolved"
-  assert_contains "$out" '+stale-local' "fetch-fallback: should fall back to the local branch diff"
-  assert_not_contains "$out" '+pr-fixed' "fetch-fallback: must not invent a PR head diff offline"
-  pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr") \
+    || fail "reachable recorded-head fallback failed: $(cat "$case_dir/stderr")"
+  assert_contains "$out" '+review-fixed' "recorded fallback should use the reachable reviewed commit"
+  assert_not_contains "$out" 'stale-local' "recorded fallback should not use the local branch"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
+    "reachable recorded fallback should not warn about the local branch"
+  pass "remote unavailability falls back to a reachable recorded review head"
 }
 
-test_pr_meta_uses_pr_head_not_stale_local
-test_pr_meta_fetches_pull_head_without_recorded_sha
-test_gitlab_meta_fetches_merge_request_head_without_recorded_sha
-test_no_pr_meta_uses_local_branch
-test_unreachable_pr_head_falls_back_with_warning
+test_invalid_and_multiline_recorded_heads_are_refused() {
+  local case_dir rc
+  case_dir=$(make_case invalid-recorded)
+  stale_and_review_commits "$case_dir"
+  write_task_meta "$case_dir" \
+    "pr=https://github.com/example/repo/pull/9" \
+    'pr_head=deadbeef'
+  set +e
+  run_review_diff "$case_dir" task-x1 > "$case_dir/out" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "invalid recorded SHA was accepted"
+  assert_contains "$(cat "$case_dir/stderr")" 'invalid review metadata' \
+    "invalid recorded SHA should fail metadata validation"
+
+  case_dir=$(make_case multiline-recorded)
+  stale_and_review_commits "$case_dir"
+  write_task_meta "$case_dir" \
+    "pr=https://github.com/example/repo/pull/9" \
+    "pr_head=$STALE_SHA" \
+    "pr_head=$REVIEW_SHA"
+  set +e
+  run_review_diff "$case_dir" task-x1 > "$case_dir/out" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "multiline recorded SHA metadata was accepted"
+  assert_contains "$(cat "$case_dir/stderr")" 'invalid review metadata' \
+    "multiline SHA metadata should fail validation"
+  pass "invalid and multiline recorded review heads are refused"
+}
+
+test_no_review_uses_local_branch() {
+  local case_dir out
+  case_dir=$(make_case no-review)
+  stale_and_review_commits "$case_dir"
+  write_task_meta "$case_dir"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr") \
+    || fail "local review fallback failed: $(cat "$case_dir/stderr")"
+  assert_contains "$out" '+stale-local' "no-review diff should use the local branch"
+  assert_not_contains "$out" '+review-fixed' "no-review diff must not discover an unrelated review head"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
+    "no-review diff should not warn"
+  pass "tasks without a recorded review retain the local branch diff"
+}
+
+test_unusable_review_heads_warn_and_use_local_branch() {
+  local case_dir out
+  case_dir=$(make_case local-fallback)
+  stale_and_review_commits "$case_dir"
+  git -C "$case_dir/wt" remote remove origin
+  write_task_meta "$case_dir" \
+    "pr=https://github.com/example/repo/pull/9" \
+    'pr_head=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr") \
+    || fail "local branch warning fallback failed: $(cat "$case_dir/stderr")"
+  assert_contains "$out" '+stale-local' "unusable review heads should fall back to local"
+  assert_contains "$(cat "$case_dir/stderr")" 'warning: review head unavailable' \
+    "local branch fallback must warn"
+  pass "the local branch is a warned final fallback when neither review head is usable"
+}
+
+test_remote_identity_mismatch_refuses_recorded_fallback() {
+  local case_dir rc
+  case_dir=$(make_case identity-mismatch)
+  set_origin_identity "$case_dir" github.com example/other-repo
+  stale_and_review_commits "$case_dir"
+  write_task_meta "$case_dir" \
+    "pr=https://github.com/example/repo/pull/9" \
+    "pr_head=$REVIEW_SHA"
+
+  set +e
+  run_review_diff "$case_dir" task-x1 > "$case_dir/out" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "review identity mismatch fell back to recorded metadata"
+  assert_contains "$(cat "$case_dir/stderr")" 'does not match the trusted origin' \
+    "identity mismatch should be an explicit refusal"
+  [ ! -s "$case_dir/out" ] || fail "identity mismatch produced a review diff"
+  pass "remote review identity mismatches refuse rather than using recorded metadata"
+}
+
+test_fresh_github_head_defeats_stale_recorded_head
+test_fresh_gitlab_head_defeats_stale_recorded_head
+test_trusted_self_hosted_gitlab_head
+test_remote_unavailability_falls_back_to_recorded_head
+test_invalid_and_multiline_recorded_heads_are_refused
+test_no_review_uses_local_branch
+test_unusable_review_heads_warn_and_use_local_branch
+test_remote_identity_mismatch_refuses_recorded_fallback
