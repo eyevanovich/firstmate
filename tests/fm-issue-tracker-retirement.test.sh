@@ -41,7 +41,7 @@ assert_tracked_workflows_are_clean() {
   local pattern unexpected
 
   pattern="(^|[^[:alnum:]_])${legacy_name}([^[:alnum:]_]|$)|(^|[^[:alnum:]_.-])${legacy_cli}([^[:alnum:]_.-]|$)|\\.${legacy_name}"
-  unexpected=$(git -C "$ROOT" grep -n -i -E "$pattern" -- . \
+  unexpected=$(git -C "$ROOT" grep -I -n -i -E "$pattern" -- . \
     ':(exclude)docs/completed-issue-history.md' \
     ':(exclude)tests/fm-issue-tracker-retirement.test.sh' || true)
 
