@@ -604,9 +604,6 @@ test_rejected_metacharacter_bytes_are_inert() {
   dir=$(make_case rejected-metacharacters)
   write_task_meta "$dir"
   write_poll_meta "$dir/home/state" safe-check https://github.com/o/r/pull/99
-  fm_pr_poll_prepare "$dir/home/state" safe-check https://github.com/o/r/pull/99 o r 99 "$POLL" \
-    || fail "could not prepare bounded watcher poll"
-  fm_pr_poll_publish_prepared || fail "could not publish bounded watcher poll"
   families=(
     'https://github.com/o$/r/pull/1'
     'https://github.com/o(/r/pull/1'
@@ -622,6 +619,9 @@ test_rejected_metacharacter_bytes_are_inert() {
     [ "$rc" -ne 0 ] || fail "rejected metacharacter byte was accepted"
     [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "rejected input left a runnable task check"
     [ ! -e "$dir/home/state/task-a.pr-poll" ] || fail "rejected input left a sidecar"
+    fm_pr_poll_prepare "$dir/home/state" safe-check https://github.com/o/r/pull/99 o r 99 "$POLL" \
+      || fail "could not prepare bounded watcher poll"
+    fm_pr_poll_publish_prepared || fail "could not publish bounded watcher poll"
 
     set +e
     FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
@@ -770,13 +770,20 @@ SH
     [ "$rc" -eq 0 ] || fail "concurrent watcher did not complete"
     grep -q '^check: .*: merged$' "$dir/watch.out" || fail "concurrent watcher never saw complete poll"
     [ ! -s "$dir/watch.err" ] || fail "concurrent watcher observed a partial artifact error"
-    cmp -s "$POLL" "$dir/home/state/task-a.check.sh" || fail "concurrent publication check bytes changed"
-    [ "$(file_mode "$dir/home/state/task-a.check.sh")" = 600 ] || fail "concurrent check mode was not private"
-    [ "$(file_mode "$dir/home/state/task-a.pr-poll")" = 600 ] || fail "concurrent sidecar mode was not private"
-    [ "$(file_mode "$dir/home/state/task-a.pr-poll-registration")" = 600 ] \
-      || fail "concurrent registration mode was not private"
-    fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
-      || fail "concurrent publication did not leave canonical provenance"
+    if [ -e "$dir/home/state/task-a.check.sh" ]; then
+      cmp -s "$POLL" "$dir/home/state/task-a.check.sh" || fail "concurrent publication check bytes changed"
+      [ "$(file_mode "$dir/home/state/task-a.check.sh")" = 600 ] || fail "concurrent check mode was not private"
+      [ "$(file_mode "$dir/home/state/task-a.pr-poll")" = 600 ] || fail "concurrent sidecar mode was not private"
+      [ "$(file_mode "$dir/home/state/task-a.pr-poll-registration")" = 600 ] \
+        || fail "concurrent registration mode was not private"
+      fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+        || fail "concurrent publication did not leave canonical provenance"
+    else
+      [ ! -e "$dir/home/state/task-a.pr-poll" ] \
+        && [ ! -e "$dir/home/state/task-a.pr-poll-registration" ] \
+        && [ ! -e "$dir/home/state/task-a.pr-poll-retirement" ] \
+        || fail "concurrent retirement left partial poll artifacts"
+    fi
     n=$((n + 1))
   done
   pass "concurrent watchers observe only complete private poll publications"
@@ -2690,7 +2697,268 @@ SH
   pass "teardown removes safe poll artifacts and refuses quarantine-directory symlinks without traversal"
 }
 
+seed_retirement_poll() {
+  local dir=$1 id=$2 url=$3 state owner repo number
+  state="$dir/home/state"
+  fm_pr_url_parse "$url" || fail "retirement fixture URL was invalid"
+  owner=$FM_PR_OWNER
+  repo=$FM_PR_REPO
+  number=$FM_PR_NUMBER
+  fm_pr_poll_prepare "$state" "$id" "$url" "$owner" "$repo" "$number" "$POLL" \
+    || fail "could not prepare retirement fixture"
+  fm_pr_poll_publish_prepared || fail "could not publish retirement fixture"
+  printf '%s\n' fm-pr-check-migration-scan-v1 > "$state/.pr-check-migration-scan-v1"
+  printf '%s\n' fm-pr-check-migration-v1 > "$state/.pr-check-migration-v1"
+  chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
+}
+
+add_retirement_control_check() {
+  local dir=$1 state
+  state="$dir/home/state"
+  printf '#!/usr/bin/env bash\nprintf "stop-cycle\\n"\n' > "$state/z-stop.check.sh"
+  chmod 0700 "$state/z-stop.check.sh"
+  FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" "$REGISTER" z-stop >/dev/null \
+    || fail "could not register retirement control check"
+}
+
+assert_retired_poll_absent() {
+  local state=$1 id=$2 suffix
+  for suffix in check.sh check-trust pr-poll pr-poll-registration pr-poll-retirement; do
+    [ ! -e "$state/$id.$suffix" ] && [ ! -L "$state/$id.$suffix" ] \
+      || fail "retired poll left $id.$suffix"
+  done
+}
+
+retirement_artifact_snapshot() {
+  local state=$1 id=$2 suffix path
+  for suffix in check.sh check-trust pr-poll pr-poll-registration pr-poll-retirement meta; do
+    path="$state/$id.$suffix"
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    if [ -L "$path" ]; then
+      printf 'link %s %s\n' "$suffix" "$(readlink "$path")"
+    elif [ -f "$path" ]; then
+      printf 'file %s %s ' "$suffix" "$(file_mode "$path")"
+      shasum -a 256 "$path" | awk '{print $1}'
+    else
+      printf 'other %s\n' "$suffix"
+    fi
+  done
+}
+
+test_merged_poll_retires_once_and_preserves_metadata() {
+  local dir state meta_before status_before registry_before rc first second
+  dir=$(make_case merged-retirement-once)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/31
+  meta_before=$(cat "$state/task-a.meta")
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/31
+  add_retirement_control_check "$dir"
+
+  set +e
+  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "merged retirement watcher failed: $(cat "$dir/watch-1.err")"
+  first=$(cat "$dir/watch-1.out")
+  case "$first" in check:*task-a.check.sh:*merged) ;; *) fail "first merged notification was not preserved: $first" ;; esac
+  assert_retired_poll_absent "$state" task-a
+  [ "$(cat "$state/task-a.meta")" = "$meta_before" ] || fail "merged retirement changed canonical metadata"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "second watcher cycle failed: $(cat "$dir/watch-2.err")"
+  second=$(cat "$dir/watch-2.out")
+  case "$second" in check:*z-stop.check.sh:*stop-cycle) ;; *) fail "second cycle did not reach the control check: $second" ;; esac
+  ! grep -F 'task-a.check.sh: merged' "$dir/watch-2.out" >/dev/null \
+    || fail "retired merged poll executed a second time"
+  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
+    || fail "merged poll did not queue exactly one terminal notification"
+
+  dir=$(make_case merged-retirement-secondmate)
+  state="$dir/home/state"
+  fm_write_meta "$state/domain.meta" \
+    'window=session:fm-domain' \
+    "worktree=$dir/secondmate-home" \
+    "project=$dir/project" \
+    'kind=secondmate' \
+    'mode=secondmate' \
+    'backend=tmux' \
+    "home=$dir/secondmate-home" \
+    'pr=https://github.com/o/r/pull/32' \
+    'pr_head=0123456789abcdef0123456789abcdef01234567'
+  mkdir -p "$dir/secondmate-home"
+  printf 'working: persistent endpoint remains healthy\n' > "$state/domain.status"
+  printf -- '- domain | scope: test | home: %s\n' "$dir/secondmate-home" > "$dir/home/data/secondmates.md"
+  meta_before=$(shasum -a 256 "$state/domain.meta")
+  status_before=$(shasum -a 256 "$state/domain.status")
+  registry_before=$(shasum -a 256 "$dir/home/data/secondmates.md")
+  seed_retirement_poll "$dir" domain https://github.com/o/r/pull/32
+  set +e
+  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/domain.out" 2> "$dir/domain.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "secondmate poll retirement failed: $(cat "$dir/domain.err")"
+  assert_retired_poll_absent "$state" domain
+  [ "$(shasum -a 256 "$state/domain.meta")" = "$meta_before" ] \
+    || fail "poll retirement changed secondmate metadata"
+  [ "$(shasum -a 256 "$state/domain.status")" = "$status_before" ] \
+    || fail "poll retirement changed secondmate status"
+  [ "$(shasum -a 256 "$dir/home/data/secondmates.md")" = "$registry_before" ] \
+    || fail "poll retirement changed the secondmate registry"
+  [ -d "$dir/secondmate-home" ] || fail "poll retirement removed the secondmate home"
+  pass "merged GitHub polls notify once and retirement preserves lifecycle metadata"
+}
+
+test_retirement_refuses_nonterminal_tampered_and_replacement_state() {
+  local dir state before rc replacement_check replacement_data replacement_registration
+  dir=$(make_case retirement-nonterminal)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/33
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/33
+  add_retirement_control_check "$dir"
+  before=$(retirement_artifact_snapshot "$state" task-a)
+  for mode in open failed; do
+    rm -f "$state/.last-check"
+    set +e
+    if [ "$mode" = open ]; then
+      FM_TEST_GH_STATE=OPEN run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$mode.out" 2> "$dir/$mode.err"
+    else
+      FM_TEST_GH_FAIL=1 run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$mode.out" 2> "$dir/$mode.err"
+    fi
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || fail "$mode watcher cycle failed: $(cat "$dir/$mode.err")"
+    [ "$(retirement_artifact_snapshot "$state" task-a)" = "$before" ] \
+      || fail "$mode result changed the armed poll"
+  done
+  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not capture nonterminal snapshot"
+  for result in OPEN CLOSED ERROR 'merged extra'; do
+    fm_pr_poll_retirement_publish "$state" task-a "$POLL" "$result" \
+      && fail "nonterminal result '$result' received retirement authority"
+  done
+
+  printf '# tamper\n' >> "$state/task-a.check.sh"
+  before=$(retirement_artifact_snapshot "$state" task-a)
+  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged \
+    && fail "tampered check received a retirement receipt"
+  [ "$(retirement_artifact_snapshot "$state" task-a)" = "$before" ] \
+    || fail "tampered check retirement attempt changed state"
+
+  dir=$(make_case retirement-registration-tamper)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/34
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/34
+  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not capture registration tamper fixture"
+  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged || fail "could not publish registration tamper receipt"
+  printf 'tamper\n' >> "$state/task-a.pr-poll-registration"
+  before=$(state_snapshot "$state")
+  fm_pr_poll_retirement_recover_one "$state" task-a "$POLL" \
+    && fail "tampered registration authorized poll removal"
+  [ "$(state_snapshot "$state")" = "$before" ] || fail "registration tamper changed poll state"
+
+  dir=$(make_case retirement-receipt-tamper)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/35
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/35
+  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not capture receipt tamper fixture"
+  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged || fail "could not publish receipt tamper fixture"
+  printf 'tamper\n' >> "$state/task-a.pr-poll-retirement"
+  before=$(state_snapshot "$state")
+  fm_pr_poll_retirement_recover_one "$state" task-a "$POLL" \
+    && fail "tampered receipt authorized poll removal"
+  [ "$(state_snapshot "$state")" = "$before" ] || fail "receipt tamper changed poll state"
+
+  dir=$(make_case retirement-replacement)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/36
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/36
+  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not capture replacement fixture"
+  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged || fail "could not publish replacement receipt"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/37
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/37
+  replacement_check=$(shasum -a 256 "$state/task-a.check.sh")
+  replacement_data=$(shasum -a 256 "$state/task-a.pr-poll")
+  replacement_registration=$(shasum -a 256 "$state/task-a.pr-poll-registration")
+  fm_pr_poll_retirement_recover_one "$state" task-a "$POLL" \
+    || fail "stale receipt did not yield to a canonical replacement"
+  [ ! -e "$state/task-a.pr-poll-retirement" ] || fail "stale receipt survived replacement recovery"
+  [ "$(shasum -a 256 "$state/task-a.check.sh")" = "$replacement_check" ] \
+    && [ "$(shasum -a 256 "$state/task-a.pr-poll")" = "$replacement_data" ] \
+    && [ "$(shasum -a 256 "$state/task-a.pr-poll-registration")" = "$replacement_registration" ] \
+    || fail "stale receipt changed replacement poll artifacts"
+  pass "nonterminal, failed, tampered, and replacement poll states retain the right authority"
+}
+
+test_retirement_crash_migration_and_teardown_recovery() {
+  local dir state before rc meta_before
+  dir=$(make_case retirement-before-notification)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/38
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/38
+  mkdir "$state/.wake-queue"
+  before=$(retirement_artifact_snapshot "$state" task-a)
+  set +e
+  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "queue failure retired a poll before durable notification"
+  [ "$(retirement_artifact_snapshot "$state" task-a)" = "$before" ] \
+    || fail "queue failure changed poll artifacts"
+  [ ! -e "$state/task-a.pr-poll-retirement" ] || fail "queue failure published a retirement receipt"
+
+  dir=$(make_case retirement-migration-recovery)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/39
+  meta_before=$(cat "$state/task-a.meta")
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/39
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_wake_append check "$2" "$3"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$state/task-a.check.sh" "check: $state/task-a.check.sh: merged" \
+    || fail "could not seed durable merged notification"
+  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not capture migration recovery fixture"
+  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged || fail "could not publish migration recovery receipt"
+  rm -f "$state/task-a.check.sh"
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    "$MIGRATE" --checks-safe > "$dir/migrate.out" 2> "$dir/migrate.err" \
+    || fail "migration did not recover pending retirement: $(cat "$dir/migrate.err")"
+  assert_retired_poll_absent "$state" task-a
+  [ "$(cat "$state/task-a.meta")" = "$meta_before" ] || fail "migration recovery changed metadata"
+  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue")" -eq 1 ] \
+    || fail "migration recovery duplicated the durable notification"
+
+  dir=$(make_case teardown-pending-retirement)
+  state="$dir/home/state"
+  fm_write_meta "$state/task-a.meta" \
+    'window=fm-task-a' \
+    "worktree=$dir/missing-worktree" \
+    "project=$dir/project" \
+    'kind=ship' \
+    'mode=local-only' \
+    'pr=https://github.com/o/r/pull/40'
+  seed_retirement_poll "$dir" task-a https://github.com/o/r/pull/40
+  fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not capture teardown retirement fixture"
+  fm_pr_poll_retirement_publish "$state" task-a "$POLL" merged || fail "could not publish teardown retirement receipt"
+  rm -f "$state/task-a.check.sh"
+  cat > "$dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod 0700 "$dir/fakebin/tmux"
+  touch "$state/.last-watcher-beat"
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
+    "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
+    || fail "teardown did not recover pending retirement: $(cat "$dir/teardown.err")"
+  [ ! -e "$state/task-a.meta" ] || fail "teardown retained completed task metadata"
+  assert_retired_poll_absent "$state" task-a
+  pass "retirement recovers across notification, migration, and teardown crash boundaries"
+}
+
 test_parser_matrix
+test_merged_poll_retires_once_and_preserves_metadata
+test_retirement_refuses_nonterminal_tampered_and_replacement_state
+test_retirement_crash_migration_and_teardown_recovery
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
 test_rejected_metacharacter_bytes_are_inert
