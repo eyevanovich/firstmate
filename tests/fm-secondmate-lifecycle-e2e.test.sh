@@ -144,7 +144,8 @@ phase_send() {
   # design is a kind=secondmate target, so the request is prefixed with the
   # from-firstmate marker (bin/fm-marker-lib.sh): the send targets the meta window
   # AND carries the marker label, and the original payload still follows it.
-  assert_grep 'send-keys -t firstmate:fm-design -l [fm-from-firstmate]' "$LOG" "send did not use the window recorded in this home's meta, or did not mark the secondmate request"
+  assert_grep 'send-keys -t firstmate:fm-design -l ' "$LOG" "send did not use the window recorded in this home's meta"
+  assert_grep 'FIRSTMATE_OP: v1 from-firstmate:' "$LOG" "send did not type the canonical secondmate request"
   assert_grep 'route this work' "$LOG" "the original request text did not survive the marker"
   assert_no_grep 'send-keys -t other-session:fm-design' "$LOG" "send targeted a foreign same-named window"
   pass "send: a bare fm-<id> secondmate routes to the meta window with the from-firstmate marker"

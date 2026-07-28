@@ -3,17 +3,17 @@
 #
 # A secondmate is itself a firstmate, so a request relayed to it lands in its own
 # chat - which the main firstmate never reads (the only channel back is the terse
-# status file). fm-send therefore prepends a from-firstmate marker
-# (bin/fm-marker-lib.sh) when, and only when, the resolved target is a task
-# selector whose meta records kind=secondmate, so the secondmate can recognize
-# the request and route its reply via the status path. These tests pin that
+# status file). fm-send therefore wraps the request in the canonical
+# from-firstmate operational envelope (through bin/fm-marker-lib.sh) when, and
+# only when, the resolved target is a task selector whose meta records
+# kind=secondmate, so the secondmate can recognize and route the request. These tests pin that
 # behavior hermetically (stubbed tmux, no real agent):
 #   1. Exact-id and stable-label kind=secondmate selectors prepend the marker.
 #   2. Exact-id and stable-label ordinary crewmate selectors stay unmarked.
 #   3. Explicit endpoints stay unmarked, with or without matching local meta.
 #   4. The --key path never carries the marker.
 #   5. Direct captain text stays unmarked, and already-marked text is idempotent.
-#   6. The marker is the label plus terminal-safe U+2063 INVISIBLE SEPARATOR.
+#   6. The envelope begins with terminal-safe U+2063 and the typed v1 kind.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -185,23 +185,24 @@ test_key_path_is_not_marked() {
   pass "fm-send: the --key path carries no marker (no literal text is typed)"
 }
 
-test_marker_is_label_plus_invisible_separator() {
-  local separator hex
+test_marker_is_typed_operational_envelope() {
+  local separator expected hex
   separator=$(printf '\342\201\243')
-  [ "$FM_FROMFIRST_MARK" = "[fm-from-firstmate]$separator" ] \
-    || fail "marker is not the expected label + U+2063 sequence"$'\n'"--- bytes ---"$'\n'"$(printf '%s' "$FM_FROMFIRST_MARK" | od -An -tx1)"
+  expected="${separator}FIRSTMATE_OP: v1 from-firstmate: "
+  [ "$FM_FROMFIRST_MARK" = "$expected" ] \
+    || fail "from-firstmate prefix is not the canonical v1 envelope"$'\n'"--- bytes ---"$'\n'"$(printf '%s' "$FM_FROMFIRST_MARK" | od -An -tx1)"
   hex=$(printf '%s' "$FM_FROMFIRST_MARK" | od -An -tx1 | tr -d ' \n')
   case "$hex" in
-    *e281a3) : ;;
-    *) fail "marker does not end in UTF-8 U+2063 bytes e2 81 a3; bytes were: $hex" ;;
+    e281a3*) : ;;
+    *) fail "envelope does not begin with UTF-8 U+2063 bytes e2 81 a3; bytes were: $hex" ;;
   esac
   fm_message_from_firstmate "${FM_FROMFIRST_MARK}do the work" \
-    || fail "detector should recognize a marked message"
+    || fail "detector should recognize a typed message"
   fm_message_from_firstmate "do the work" \
-    && fail "direct captain input must remain unmarked"
-  fm_message_from_firstmate "[fm-from-firstmate]do the work" \
-    && fail "detector must reject the label without U+2063"
-  pass "fm-send: the marker is '[fm-from-firstmate]' + terminal-safe U+2063, while direct captain text stays unmarked"
+    && fail "direct captain input must remain unclassified"
+  fm_message_from_firstmate "FIRSTMATE_OP: v1 from-firstmate: do the work" \
+    && fail "detector must reject the typed label without U+2063"
+  pass "fm-send: from-firstmate uses the canonical typed envelope while direct captain text stays unclassified"
 }
 
 test_marker_transformation_is_idempotent() {
@@ -236,6 +237,6 @@ test_exact_secondmate_task_id_is_marked
 test_crewmate_target_is_not_marked
 test_explicit_window_is_not_marked
 test_key_path_is_not_marked
-test_marker_is_label_plus_invisible_separator
+test_marker_is_typed_operational_envelope
 test_marker_transformation_is_idempotent
 test_marked_send_preserves_trailing_newlines

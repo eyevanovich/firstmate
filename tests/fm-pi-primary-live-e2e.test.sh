@@ -103,8 +103,13 @@ wait_pid_dead() {
 
 mkdir -p "$LAB"
 git clone -q "$ROOT" "$PROJECT"
+mkdir -p "$PROJECT/.pi/extensions/lib"
 cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$PROJECT/.pi/extensions/fm-primary-pi-watch.ts"
 cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$PROJECT/.pi/extensions/fm-primary-turnend-guard.ts"
+cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$PROJECT/.pi/extensions/lib/fm-operational-input.ts"
+cp "$ROOT/bin/fm-operational-input.sh" "$PROJECT/bin/fm-operational-input.sh"
+cp "$ROOT/bin/fm-subagent-pretool-check.sh" "$PROJECT/bin/fm-subagent-pretool-check.sh"
+cp "$ROOT/bin/fm-primary-scope-lib.sh" "$PROJECT/bin/fm-primary-scope-lib.sh"
 cp "$ROOT/bin/fm-supervision-instructions.sh" "$PROJECT/bin/fm-supervision-instructions.sh"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" "$PI_DIR"
 

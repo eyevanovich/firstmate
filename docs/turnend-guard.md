@@ -4,8 +4,8 @@ This is the authoritative contract for the "no turn ends blind" primary guard re
 The turn-end supervision predicate lives in `bin/fm-turnend-guard.sh`.
 Its primary-checkout scope lives in `bin/fm-primary-scope-lib.sh`, shared with the native session-start nudge documented in `docs/sessionstart-nudge.md`.
 Harness-specific tracked hook files only adapt each verified harness's real turn-end mechanism to that shared predicate.
-Two related but separate PreToolUse seatbelts deny a bad command shape before it runs rather than detecting a blind turn end afterward: the watcher-arm seatbelt (`bin/fm-arm-pretool-check.sh`, `docs/arm-pretool-check.md`) and the cd-guard (`bin/fm-cd-pretool-check.sh`, `docs/cd-guard.md`).
-Each seatbelt's own document defines its scope; they do not share the turn-end guard's marker-aware primary detection.
+Three related but separate PreToolUse seatbelts deny a bad operation before it runs rather than detecting a blind turn end afterward: the watcher-arm seatbelt (`bin/fm-arm-pretool-check.sh`, `docs/arm-pretool-check.md`), the cd-guard (`bin/fm-cd-pretool-check.sh`, `docs/cd-guard.md`), and the primary delegation guard (`bin/fm-subagent-pretool-check.sh`, `docs/subagent-guard.md`).
+Each seatbelt's own document defines its scope.
 
 ## Gap Closed
 
@@ -15,6 +15,7 @@ On 2026-07-04, that exact gap left a parked no-mistakes gate unwatched for about
 
 `bin/fm-turnend-guard.sh` closes the gap by checking the primary's own turn-end path.
 When tasks are in flight and there is no live identity-matched watcher with a fresh beacon, a harness hook must either block the turn end or force a bounded follow-up turn that tells the primary to resume the session-start supervision protocol for its harness.
+User-role follow-ups from Pi, OpenCode, and Grok use the canonical `turn-end-guard` envelope owned by `bin/fm-operational-input.sh`; plain hook denial output is not a user-role producer.
 
 ## Shared Predicate
 

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
 
@@ -74,18 +75,15 @@ export const FmPrimaryTurnendGuard = async ({ client, directory, worktree }) => 
       if (result.code !== 2) return;
 
       try {
+        const body =
+          "TURN WOULD END BLIND - supervision is off. " +
+          "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
+          result.stderr;
+        const text = await encodeFirstmateOperationalInput(root, "turn-end-guard", body);
         await client.session.promptAsync({
           path: { id: sessionID },
           body: {
-            parts: [
-              {
-                type: "text",
-                text:
-                  "TURN WOULD END BLIND - supervision is off. " +
-                  "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
-                  result.stderr,
-              },
-            ],
+            parts: [{ type: "text", text }],
           },
         });
         skipNextIdle = true;

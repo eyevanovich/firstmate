@@ -261,14 +261,18 @@ hash_file_for_test() {
 
 install_pi_turnend_extension_fixture() {
   local root=$1
-  mkdir -p "$root/.pi/extensions"
+  mkdir -p "$root/.pi/extensions/lib" "$root/bin"
   cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$root/.pi/extensions/fm-primary-turnend-guard.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$root/.pi/extensions/lib/fm-operational-input.ts"
+  cp "$ROOT/bin/fm-operational-input.sh" "$root/bin/fm-operational-input.sh"
 }
 
 install_pi_watch_extension_fixture() {
   local root=$1
-  mkdir -p "$root/.pi/extensions"
+  mkdir -p "$root/.pi/extensions/lib" "$root/bin"
   cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$root/.pi/extensions/fm-primary-pi-watch.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$root/.pi/extensions/lib/fm-operational-input.ts"
+  cp "$ROOT/bin/fm-operational-input.sh" "$root/bin/fm-operational-input.sh"
 }
 
 write_pi_watch_loaded_marker() {

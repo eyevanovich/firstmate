@@ -105,8 +105,8 @@ assert_meta_profile() {
   assert_grep "effort=$effort" "$meta" "meta missing effort=$effort"
 }
 
-test_no_profile_keeps_claude_launch_unchanged() {
-  local rec id out status expected launch
+test_no_profile_keeps_claude_launch_typed() {
+  local rec id out status launch
   id=profile-off-z1
   rec=$(make_spawn_case profile-off claude "$id")
   read_case_record "$rec"
@@ -118,9 +118,11 @@ test_no_profile_keeps_claude_launch_unchanged() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$(cat '$HOME_DIR/data/$id/brief.md')\""
-  [ "$launch" = "$expected" ] || fail "no-profile claude launch changed"$'\n'"expected: $expected"$'\n'"actual:   $launch"
-  pass "no --model/--effort records defaults and keeps the claude launch byte-identical"
+  assert_contains "$launch" "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions" \
+    "no-profile claude launch changed its harness posture"
+  assert_contains "$launch" "'$ROOT/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md'" \
+    "no-profile claude launch did not encode the brief"
+  pass "no --model/--effort records defaults and launches Claude with a typed brief"
 }
 
 test_active_dispatch_profile_requires_explicit_harness_for_ship() {
@@ -285,8 +287,9 @@ test_grok_omits_invalid_max_reasoning_effort() {
   expect_code 0 "$status" "grok spawn with unsupported max reasoning effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "grok --always-approve --model 'grok-4' \"\$(cat " \
+  assert_contains "$launch" "grok --always-approve --model 'grok-4' \"\$('" \
     "grok launch did not preserve the model flag when max effort was omitted"
+  assert_contains "$launch" "encode launch-brief" "grok max-effort launch did not encode the brief"
   assert_not_contains "$launch" "--reasoning-effort" "grok launch must omit unsupported max reasoning effort"
   assert_not_contains "$launch" "--effort" "grok launch must not fall back to --effort for reasoning effort"
   pass "grok omits unsupported max reasoning effort"
@@ -304,8 +307,9 @@ test_grok_omits_invalid_xhigh_reasoning_effort() {
   expect_code 0 "$status" "grok spawn with unsupported xhigh reasoning effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 xhigh
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "grok --always-approve --model 'grok-4' \"\$(cat " \
+  assert_contains "$launch" "grok --always-approve --model 'grok-4' \"\$('" \
     "grok launch did not preserve the model flag when xhigh effort was omitted"
+  assert_contains "$launch" "encode launch-brief" "grok xhigh launch did not encode the brief"
   assert_not_contains "$launch" "--reasoning-effort" "grok launch must omit unsupported xhigh reasoning effort"
   assert_not_contains "$launch" "--effort" "grok launch must not fall back to --effort for reasoning effort"
   pass "grok omits unsupported xhigh reasoning effort"
@@ -384,7 +388,7 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches"
 }
 
-test_no_profile_keeps_claude_launch_unchanged
+test_no_profile_keeps_claude_launch_typed
 test_active_dispatch_profile_requires_explicit_harness_for_ship
 test_active_dispatch_profile_requires_explicit_harness_for_scout
 test_active_dispatch_profile_allows_explicit_harness

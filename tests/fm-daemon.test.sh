@@ -692,27 +692,32 @@ test_busy_guard_defers_when_supervisor_busy() {
   pass "busy-guard defers injection when supervisor pane is busy"
 }
 
-test_marker_detection() {
-  local marker_hex
+test_operational_input_detection() {
+  local marker_hex typed legacy dir state
   marker_hex=$(printf '%s' "$FM_INJECT_MARK" | od -An -tx1 | tr -d ' \n')
   [ "$marker_hex" = e281a3 ] \
-    || fail "FM_INJECT_MARK must use terminal-safe U+2063 bytes, got $marker_hex"
-  # message_is_injection: marker present -> injection; absent -> real message
-  message_is_injection "${FM_INJECT_MARK}Supervisor escalate: done" \
-    || fail "marker-prefixed message not detected as injection"
+    || fail "operational inputs must use terminal-safe U+2063 bytes, got $marker_hex"
+  fm_operational_input_encode away-supervisor "Supervisor escalate: done" typed
+  legacy="${FM_OPERATIONAL_MARK}Supervisor escalate (1 event(s)): done"
+  message_is_injection "$typed" \
+    || fail "typed away-supervisor input was not detected"
+  message_is_injection "$legacy" \
+    || fail "recognized legacy away input was not detected"
+  message_is_injection "${FM_INJECT_MARK}arbitrary copied marker" \
+    && fail "arbitrary U+2063 text impersonated an operational input"
   message_is_injection "how's it going?" \
-    && fail "plain message misdetected as injection"
-  message_is_injection "" && fail "empty message misdetected as injection"
-  # should_exit_afk: the full afk-exit contract
-  local dir state
+    && fail "plain message misdetected as operational input"
+  message_is_injection "" && fail "empty message misdetected as operational input"
   dir=$(make_supercase marker-detect)
   state="$dir/state"
   afk_enter "$state"
+  should_exit_afk "$state" "$typed" \
+    && fail "typed operational input should not exit afk"
   should_exit_afk "$state" "${FM_INJECT_MARK}escalate" \
-    && fail "marker message should not exit afk (internal escalation)"
+    || fail "arbitrary marked text should exit afk as captain input"
   should_exit_afk "$state" "status update please" \
     || fail "plain message should exit afk (captain is back)"
-  pass "marker detection: marker -> stay afk, no marker -> exit afk"
+  pass "operational-input detection keeps only current and explicit legacy forms internal"
 }
 
 test_afk_turn_exemption() {
@@ -744,21 +749,23 @@ test_should_exit_afk_when_afk_inactive() {
 }
 
 test_strip_injection_marker() {
-  local stripped
-  stripped=$(strip_injection_marker "${FM_INJECT_MARK}Supervisor escalate: done")
+  local stripped typed legacy
+  fm_operational_input_encode away-supervisor "Supervisor escalate: done" typed
+  stripped=$(strip_injection_marker "$typed")
   [ "$stripped" = "Supervisor escalate: done" ] \
-    || fail "marker not stripped: '$stripped'"
-  # No marker → unchanged.
+    || fail "typed envelope not stripped: '$stripped'"
+  legacy="${FM_OPERATIONAL_MARK}Supervisor escalate (1 event(s)): done"
+  stripped=$(strip_injection_marker "$legacy")
+  [ "$stripped" = "Supervisor escalate (1 event(s)): done" ] \
+    || fail "legacy envelope not stripped compatibly: '$stripped'"
   stripped=$(strip_injection_marker "no marker here")
   [ "$stripped" = "no marker here" ] \
-    || fail "non-marker text changed: '$stripped'"
-  # Empty → empty.
+    || fail "unclassified text changed: '$stripped'"
   stripped=$(strip_injection_marker "")
   [ "$stripped" = "" ] || fail "empty text changed: '$stripped'"
-  # Only marker → empty.
   stripped=$(strip_injection_marker "$FM_INJECT_MARK")
-  [ "$stripped" = "" ] || fail "bare marker not stripped: '$stripped'"
-  pass "strip_injection_marker removes the sentinel marker cleanly"
+  [ "$stripped" = "$FM_INJECT_MARK" ] || fail "bare marker should remain captain input"
+  pass "strip_injection_marker strips only owner-classified current and legacy input"
 }
 
 test_pane_input_pending_detects_partial_input() {
@@ -1691,7 +1698,7 @@ test_signal_escalate_marks_seen_no_catchall_refire
 test_collapse_newlines_pure
 test_afk_absent_daemon_does_not_inject
 test_busy_guard_defers_when_supervisor_busy
-test_marker_detection
+test_operational_input_detection
 test_afk_turn_exemption
 test_should_exit_afk_when_afk_inactive
 test_strip_injection_marker
