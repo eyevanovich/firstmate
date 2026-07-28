@@ -235,17 +235,21 @@ test_drain_asserts_watcher_liveness() {
 }
 
 test_structural_signal_enrichment_preserves_raw_rows() {
-  local dir state out expected actual annotation_count outside perl_bin
+  local dir state out expected actual annotation_count outside hardlink fifo perl_bin
   dir=$(make_case enrichment)
   state="$dir/state"
   out="$dir/drain.out"
   expected="$dir/expected.out"
   actual="$dir/actual.out"
   outside="$dir/outside-secret"
+  hardlink="$state/hardlink.status"
+  fifo="$state/fifo.status"
   printf 'working: first\n\ndone: latest event\n' > "$state/task.status"
   printf 'working: old turn-end context\n' > "$state/turn-only.status"
   printf 'must-not-be-read\n' > "$outside"
   ln -s "$outside" "$state/escape.status"
+  ln "$outside" "$hardlink"
+  mkfifo "$fifo"
   perl_bin=$(command -v perl) || fail "perl is required for safe status reads"
   cat > "$dir/fakebin/perl" <<'SH'
 #!/usr/bin/env bash
@@ -266,6 +270,8 @@ SH
   append_wake "$state" signal task.turn-ended "signal: $outside" || fail "coalesced turn-end wake append failed"
   append_wake "$state" signal turn-only.turn-ended "signal: $outside" || fail "bare turn-end wake append failed"
   append_wake "$state" signal escape.status "signal: $outside" || fail "symlink status wake append failed"
+  append_wake "$state" signal hardlink.status "signal: $outside" || fail "hard-linked status wake append failed"
+  append_wake "$state" signal fifo.status "signal: $outside" || fail "FIFO status wake append failed"
   append_wake "$state" signal arbitrary-key "signal: $outside" || fail "non-status signal wake append failed"
   append_wake "$state" check task.check.sh "check: complete payload" || fail "check wake append failed"
   append_wake "$state" stale test:fm-task "stale: test:fm-task" || fail "stale wake append failed"
@@ -287,9 +293,12 @@ SH
   grep -F 'latest wake-EVENT observed at drain, not current state; historical / not necessarily the triggering event: turn-only.status:' "$out" >/dev/null \
     || fail "bare turn-end mapping did not carry the historical warning"
   if grep -F 'must-not-be-read' "$out" >/dev/null; then
-    fail "drain trusted a payload path or followed an out-of-state status symlink"
+    fail "drain trusted a payload path or followed an unsafe status file"
   fi
-  pass "structural signal enrichment is separate, deduped, home-local, and tier-zero for other wakes"
+  if grep -E ': (escape|hardlink|fifo)\.status:' "$out" >/dev/null; then
+    fail "symlinked, hard-linked, or non-regular status input produced an annotation"
+  fi
+  pass "structural signal enrichment is separate, deduped, home-local, and ignores unsafe status files"
 }
 
 test_enrichment_caps_and_status_file_failures() {

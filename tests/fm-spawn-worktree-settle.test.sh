@@ -54,6 +54,11 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/sleep"
   fm_fake_exit0 "$fakebin" treehouse
   printf '%s\n' "$fakebin"
 }
@@ -89,15 +94,19 @@ EOF
 }
 
 run_settle_spawn() {
-  local id=$1
+  local id=$1 project_arg pane_path pane_stale stale_reads
+  project_arg=${PROJECT_ARG_OVERRIDE:-$PROJ_DIR}
+  pane_path=${PANE_PATH_OVERRIDE:-$WT_DIR}
+  pane_stale=${PANE_STALE_OVERRIDE:-$STALE_DIR}
+  stale_reads=${STALE_READS_OVERRIDE:-$STALE_READS}
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
-    FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
-    FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
+    FM_FAKE_PANE_PATH="$pane_path" FM_FAKE_PANE_STALE="$pane_stale" \
+    FM_FAKE_PANE_STALE_READS="$stale_reads" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJ_DIR" 2>&1
+    "$SPAWN" "$id" "$project_arg" 2>&1
 }
 
 # A single stale first read (the exact incident) must not be accepted: the
@@ -138,10 +147,60 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
     "meta did not record the already-settled worktree"
   [ "$elapsed" -le 5 ] || fail "already-settled pane took ${elapsed}s to confirm - expected close to the single inter-poll sleep"
+  [ "$(cat "$COUNTFILE")" -eq 2 ] || fail "already-settled pane was not accepted after exactly two identical reads"
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
+}
+
+test_unsettled_pane_times_out_without_recording_metadata() {
+  local rec id out status reads
+  id=settle-timeout-z3
+  rec=$(make_settle_case settle-timeout "$id" 0)
+  read_settle_record "$rec"
+
+  set +e
+  out=$(PANE_PATH_OVERRIDE="$PROJ_DIR" run_settle_spawn "$id")
+  status=$?
+  set -e
+  expect_code 1 "$status" "spawn must fail when the pane never leaves the project root"
+  assert_contains "$out" "treehouse get did not enter a worktree within 60s" "timeout did not report the settling failure"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "timeout recorded metadata for an unsettled pane"
+  reads=$(cat "$COUNTFILE")
+  [ "$reads" -eq 60 ] || fail "timeout polled $reads times instead of the bounded 60 reads"
+  pass "an unsettled pane times out without recording worktree metadata"
+}
+
+test_symlinked_project_root_uses_physical_path() {
+  local rec id out status project_link reads
+  id=settle-symlink-root-z4
+  rec=$(make_settle_case settle-symlink-root "$id" 0)
+  read_settle_record "$rec"
+  project_link="${PROJ_DIR}-link"
+  ln -s "$PROJ_DIR" "$project_link"
+
+  out=$(PROJECT_ARG_OVERRIDE="$project_link" PANE_STALE_OVERRIDE="$PROJ_DIR" STALE_READS_OVERRIDE=1 run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should settle when the project argument is a symlink"
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
+    "symlinked project root did not settle on the intended worktree"
+  assert_no_grep "worktree=$PROJ_DIR" "$HOME_DIR/state/$id.meta" \
+    "physical project root was mistaken for an isolated worktree"
+  reads=$(cat "$COUNTFILE")
+  [ "$reads" -eq 3 ] || fail "symlinked project root should reset the candidate before two intended reads, got $reads polls"
+  pass "a symlinked project root is compared by physical path before settling"
+}
+
+test_orca_excludes_treehouse_settling() {
+  assert_grep "if [ \"\$KIND\" != secondmate ] && [ \"\$BACKEND\" != orca ]; then" "$SPAWN" \
+    "Orca no longer bypasses the treehouse settling owner"
+  assert_no_grep 'orca) fm_backend_orca_current_path' "$SPAWN" \
+    "Orca unexpectedly gained a pane-current-path settling adapter"
+  pass "Orca remains excluded because it owns worktree creation directly"
 }
 
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_unsettled_pane_times_out_without_recording_metadata
+test_symlinked_project_root_uses_physical_path
+test_orca_excludes_treehouse_settling
 
 echo "# all fm-spawn-worktree-settle tests passed"

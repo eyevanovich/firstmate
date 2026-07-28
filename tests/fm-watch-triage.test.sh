@@ -729,6 +729,33 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate still surfaces once"
 }
 
+test_unknown_liveness_does_not_suppress_declared_pause() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid wakes
+  dir=$(make_case unknown-pause-liveness); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/unknown.status"
+  window="test:fm-unknown"
+  printf 'idle endpoint with inconclusive liveness\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/unknown.meta"
+  printf 'paused: waiting externally while endpoint liveness is unknown\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-unknown_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle endpoint with inconclusive liveness")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND='' FM_FAKE_CREW_STATE='state: stopped · source: pane · inconclusive liveness' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "unknown endpoint liveness was suppressed behind the pause cadence"
+  wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
+  [ "$wakes" -eq 1 ] || fail "unknown endpoint liveness should surface exactly once, got $wakes wakes"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "unknown liveness did not surface the plain stale endpoint"
+  grep -F 'awaiting external' "$out" >/dev/null && fail "unknown liveness was incorrectly classified as a confirmed-dead pause"
+  pass "unknown endpoint liveness remains visible instead of using dead-agent pause suppression"
+}
+
 test_secondmate_paused_resurfaces_in_normal_mode() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back
   dir=$(make_case secondmate-paused-resurface); state="$dir/state"; fakebin="$dir/fakebin"
@@ -1257,6 +1284,7 @@ test_wedge_escalation_resets_when_pane_becomes_active
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
+test_unknown_liveness_does_not_suppress_declared_pause
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
 test_secondmate_unpause_clears_pause_tracking

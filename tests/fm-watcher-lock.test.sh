@@ -726,49 +726,109 @@ test_pid_identity_is_locale_invariant() {
   pass "fm_pid_identity is locale-invariant across LC_ALL/LC_TIME"
 }
 
-write_fake_proc_identity() {
-  local proc_root=$1 pid=$2 starttime=$3
-  mkdir -p "$proc_root/$pid"
-  printf '%s\n' "$pid (watcher ) with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 $starttime 20 21 22" > "$proc_root/$pid/stat"
-  printf 'bash\0/path with spaces/fm-watch.sh\0--flag\0' > "$proc_root/$pid/cmdline"
+make_fake_linux_uname() {
+  local fakebin=$1
+  cat > "$fakebin/uname" <<'SH'
+#!/usr/bin/env bash
+printf 'Linux\n'
+SH
+  chmod +x "$fakebin/uname"
 }
 
-test_linux_pid_identity_ignores_wall_clock_and_detects_pid_reuse() {
-  local dir state proc_root pid before after_time_jump after_pid_reuse
-  [ "$(uname)" = Linux ] || {
-    pass "Linux process identity clock-step regression skipped on non-Linux host"
-    return
-  }
+write_fake_proc_identity() {
+  local proc_root=$1 pid=$2 starttime=$3
+  shift 3
+  mkdir -p "$proc_root/$pid"
+  printf '%s\n' "$pid (watcher ) with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 $starttime 20 21 22" > "$proc_root/$pid/stat"
+  printf '%s\0' "$@" > "$proc_root/$pid/cmdline"
+}
+
+fake_linux_pid_identity() {
+  local fakebin=$1 proc_root=$2 state=$3 pid=$4
+  PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid"
+}
+
+test_linux_pid_identity_ignores_wall_clock_and_detects_process_changes() {
+  local dir state fakebin proc_root pid before after_time_jump after_pid_reuse after_cmdline malformed
   dir=$(make_case linux-pid-identity)
   state="$dir/state"
+  fakebin="$dir/fakebin"
   proc_root="$dir/proc"
   pid=4242
+  make_fake_linux_uname "$fakebin"
   mkdir -p "$proc_root"
   printf 'btime 1784094040\n' > "$proc_root/stat"
-  write_fake_proc_identity "$proc_root" "$pid" 987654
+  write_fake_proc_identity "$proc_root" "$pid" 987654 bash '/path with spaces/fm-watch.sh' --flag
 
-  before=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") \
+  before=$(fake_linux_pid_identity "$fakebin" "$proc_root" "$state" "$pid") \
     || fail "could not read initial fake Linux process identity"
   printf 'btime 1784094016\n' > "$proc_root/stat"
-  after_time_jump=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") \
+  after_time_jump=$(fake_linux_pid_identity "$fakebin" "$proc_root" "$state" "$pid") \
     || fail "could not re-read fake Linux process identity after btime change"
 
   [ "$after_time_jump" = "$before" ] \
     || fail "Linux process identity changed with btime (before '$before', after '$after_time_jump')"
   [ "$before" = 'linux-starttime=987654 cmdline-hex=62617368002f706174682077697468207370616365732f666d2d77617463682e7368002d2d666c616700' ] \
     || fail "Linux process identity did not combine parsed starttime field 22 with the full cmdline ('$before')"
-  pass "Linux process identity ignores simulated btime changes"
 
-  write_fake_proc_identity "$proc_root" "$pid" 987655
-  after_pid_reuse=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") \
+  write_fake_proc_identity "$proc_root" "$pid" 987655 bash '/path with spaces/fm-watch.sh' --flag
+  after_pid_reuse=$(fake_linux_pid_identity "$fakebin" "$proc_root" "$state" "$pid") \
     || fail "could not read reused fake Linux pid identity"
   [ "$after_pid_reuse" != "$before" ] || fail "Linux process identity missed changed starttime for reused pid"
-  pass "Linux process identity detects pid reuse"
+
+  write_fake_proc_identity "$proc_root" "$pid" 987654 bash '/path with spaces/fm-watch.sh' --different-flag
+  after_cmdline=$(fake_linux_pid_identity "$fakebin" "$proc_root" "$state" "$pid") \
+    || fail "could not read fake Linux identity after a command-line change"
+  [ "$after_cmdline" != "$before" ] || fail "Linux process identity missed a changed command line at the same starttime"
+
+  printf '%s\n' "$pid (malformed) S 1 2 3" > "$proc_root/$pid/stat"
+  if malformed=$(fake_linux_pid_identity "$fakebin" "$proc_root" "$state" "$pid" 2>/dev/null); then
+    fail "malformed Linux /proc stat unexpectedly produced identity '$malformed'"
+  fi
+  : > "$proc_root/$pid/cmdline"
+  printf '%s\n' "$pid (watcher) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654 20 21 22" > "$proc_root/$pid/stat"
+  if fake_linux_pid_identity "$fakebin" "$proc_root" "$state" "$pid" >/dev/null 2>&1; then
+    fail "empty Linux /proc cmdline unexpectedly produced a process identity"
+  fi
+  pass "Linux process identity ignores wall-clock changes and detects PID reuse, command changes, and malformed proc data"
+}
+
+test_linux_pid_identity_binds_watcher_lock_ownership() {
+  local dir state fakebin proc_root pid identity lockdir watch_path home
+  dir=$(make_case linux-lock-ownership)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  proc_root="$dir/proc"
+  pid=4243
+  watch_path="$WATCH"
+  home="$dir/home"
+  lockdir="$state/.watch.lock"
+  make_fake_linux_uname "$fakebin"
+  write_fake_proc_identity "$proc_root" "$pid" 765432 bash "$watch_path" --flag
+  identity=$(fake_linux_pid_identity "$fakebin" "$proc_root" "$state" "$pid") \
+    || fail "could not capture fake Linux watcher identity"
+  mkdir "$lockdir"
+  printf '%s\n' "$pid" > "$lockdir/pid"
+  printf '%s\n' "$home" > "$lockdir/fm-home"
+  printf '%s\n' "$watch_path" > "$lockdir/watcher-path"
+  printf '%s\n' "$identity" > "$lockdir/pid-identity"
+
+  PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$proc_root" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"' _ "$LIB" "$state" "$watch_path" "$pid" "$home" \
+    || fail "matching Linux starttime and command-line bytes did not prove watcher lock ownership"
+  write_fake_proc_identity "$proc_root" "$pid" 765432 bash "$watch_path" --replacement
+  if PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$proc_root" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"' _ "$LIB" "$state" "$watch_path" "$pid" "$home"; then
+    fail "watcher lock ownership survived a command-line identity change"
+  fi
+  pass "watcher lock ownership is bound to Linux starttime and complete command-line bytes"
 }
 
 test_singleton_start
 test_pid_identity_is_locale_invariant
-test_linux_pid_identity_ignores_wall_clock_and_detects_pid_reuse
+test_linux_pid_identity_ignores_wall_clock_and_detects_process_changes
+test_linux_pid_identity_binds_watcher_lock_ownership
 test_stale_watch_lock_reclaimed
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings

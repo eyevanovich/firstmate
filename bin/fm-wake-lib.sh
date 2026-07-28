@@ -482,9 +482,11 @@ fm_wake_latest_event() {  # <validated-status-path> <tail-byte-cap>
   FM_WAKE_EVENT_TRUNCATED=false
   result=$(perl -MFcntl=:DEFAULT -e '
     my ($path, $limit) = @ARGV;
-    sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW) or exit 1;
+    sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 1;
     my @stat = stat $file or exit 1;
     exit 1 unless -f _;
+    exit 1 unless $stat[3] == 1;
+    exit 1 unless $stat[4] == $<;
     my $size = $stat[7];
     exit 1 unless $size =~ /\A\d+\z/;
     my $start = $size > $limit ? $size - $limit : 0;
