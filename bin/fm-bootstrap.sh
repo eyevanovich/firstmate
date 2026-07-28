@@ -23,8 +23,8 @@
 #          an origin fetch) AND its loaded instruction surface (AGENTS.md, bin/,
 #          or .agents/skills/) actually changed, bootstrap immediately nudges it
 #          via FM_HOME=<active-home> bin/fm-send.sh fm-<id> so meta resolves the
-#          current backend target and the standard from-firstmate marker is
-#          applied. A successful send prints one BOOTSTRAP_INFO line with the
+#          current backend target and the canonical from-firstmate operational
+#          envelope is applied. A successful send prints one BOOTSTRAP_INFO line with the
 #          exact target and message sent; a failed send leaves an idempotent
 #          retry marker under state/.secondmate-nudge-pending/ and prints an
 #          actionable NUDGE_SECONDMATES line.

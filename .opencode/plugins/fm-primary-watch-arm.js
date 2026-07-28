@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
 const ARM_READY_TIMEOUT_MS = Number(process.env.FM_OPENCODE_ARM_READY_TIMEOUT_MS || 12000);
@@ -147,16 +148,12 @@ function observeArmOutput(stdout, stderr) {
   }
 }
 
-async function sendPrompt(client, sessionID, text) {
+async function sendPrompt(paths, client, sessionID, text) {
+  const encoded = await encodeFirstmateOperationalInput(paths.root, "watcher", text);
   await client.session.promptAsync({
     path: { id: sessionID },
     body: {
-      parts: [
-        {
-          type: "text",
-          text,
-        },
-      ],
+      parts: [{ type: "text", text: encoded }],
     },
   });
 }
@@ -191,6 +188,7 @@ function spawnArm(paths, sessionID, client) {
     if (!reason) return;
     try {
       await sendPrompt(
+        paths,
         client,
         sessionID,
         `WATCHER FIRED - drain queued wakes with bin/fm-wake-drain.sh, handle the reported wake, and continue normal supervision.\n\n${reason}`,
@@ -203,6 +201,7 @@ function spawnArm(paths, sessionID, client) {
     setArmStatus("failed");
     try {
       await sendPrompt(
+        paths,
         client,
         sessionID,
         `WATCHER FIRED - drain queued wakes with bin/fm-wake-drain.sh, handle the reported wake, and continue normal supervision.\n\nwatcher: FAILED - OpenCode arm child failed: ${error.message}`,

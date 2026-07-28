@@ -15,6 +15,16 @@
           }
         ],
         "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "bash -lc 'payload=$(cat 2\u003e/dev/null || true); [ -n \"$payload\" ] || exit 0; command -v jq \u003e/dev/null 2\u003e\u00261 || exit 0; root=$(pwd -P) || exit 0; [ -x \"$root/bin/fm-subagent-pretool-check.sh\" ] || exit 0; [ -f \"$root/AGENTS.md\" ] || exit 0; [ -f \"$root/.codex/hooks.json\" ] || exit 0; jq -e \"any(.hooks.PreToolUse[]?.hooks[]?.command?; type == \\\"string\\\" and contains(\\\"fm-subagent-pretool-check.sh\\\"))\" \"$root/.codex/hooks.json\" \u003e/dev/null 2\u003e\u00261 || exit 0; printf \"%s\" \"$payload\" | \"$root/bin/fm-subagent-pretool-check.sh\" --stderr-only'",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": ".*"
       }
     ],
     "SessionStart": [

@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
 
 let guardFollowupActive = false;
 
@@ -104,6 +105,24 @@ function runCdCheck(command: string): Promise<{ code: number; stderr: string }> 
   return runChecker("fm-cd-pretool-check.sh", command);
 }
 
+function runDelegationCheck(
+  toolName: string,
+  input: unknown,
+): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolveResult) => {
+    const child = spawn(`${root}/bin/fm-subagent-pretool-check.sh`, ["--stderr-only"], {
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", () => resolveResult({ code: 0, stderr: "" }));
+    child.on("close", (code) => resolveResult({ code: code ?? 0, stderr }));
+    child.stdin.end(JSON.stringify({ tool_name: toolName, tool_input: input ?? {} }));
+  });
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on?.("session_start", (event) => {
     const reason = String((event as { reason?: unknown }).reason ?? "");
@@ -117,7 +136,15 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", async (event) => {
-    if (event.type !== "tool_call" || event.toolName !== "bash") return {};
+    if (event.type !== "tool_call") return {};
+    const delegationResult = await runDelegationCheck(event.toolName, event.input);
+    if (delegationResult.code === 2) {
+      return {
+        block: true,
+        reason: delegationResult.stderr.trim() || "denied by the Firstmate delegation guard",
+      };
+    }
+    if (event.toolName !== "bash") return {};
     const command = String((event.input as { command?: unknown })?.command ?? "");
     if (!command) return {};
     const cdResult = await runCdCheck(command);
@@ -140,12 +167,13 @@ export default function (pi: ExtensionAPI) {
 
     guardFollowupActive = true;
     try {
-      await pi.sendUserMessage(
+      const body =
         "TURN WOULD END BLIND - supervision is off. " +
-          "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
-          result.stderr,
-        { deliverAs: "followUp" },
-      );
+        "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
+        result.stderr;
+      await pi.sendUserMessage(encodeFirstmateOperationalInput("turn-end-guard", body), {
+        deliverAs: "followUp",
+      });
     } catch {
       guardFollowupActive = false;
     }

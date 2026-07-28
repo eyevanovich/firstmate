@@ -13,6 +13,15 @@
           }
         ],
         "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/fm-subagent-pretool-check.sh --claude",
+            "type": "command"
+          }
+        ],
+        "matcher": ".*"
       }
     ],
     "SessionStart": [

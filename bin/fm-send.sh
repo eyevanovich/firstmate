@@ -21,12 +21,12 @@
 # Slash commands, and codex `$...` skill invocations resolved through harness
 # meta, get a longer pre-Enter settle so completion popups do not swallow Enter.
 #
-# From-firstmate marker: when the resolved target is a task selector whose meta
-# records kind=secondmate, the text is prefixed with the from-firstmate marker
-# (bin/fm-marker-lib.sh) so the secondmate routes its reply via its status file
-# or a status-pointed doc instead of stranding it in chat the main firstmate
-# never reads. A crewmate/scout target, an explicit backend-target escape-hatch
-# target, and the --key path are never marked - their behavior is unchanged.
+# From-firstmate input: when the resolved target is a task selector whose meta
+# records kind=secondmate, the text is wrapped as the canonical from-firstmate
+# operational kind so the secondmate routes its reply via its status file or a
+# status-pointed doc instead of stranding it in chat the main firstmate never
+# reads. A crewmate/scout target, an explicit backend-target escape-hatch target,
+# and the --key path are never wrapped - their behavior is unchanged.
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
 # accepted, but the harness needs a beat to spin up the turn before its busy

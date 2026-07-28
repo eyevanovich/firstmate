@@ -20,14 +20,12 @@
 # state/.subsuper-escalations and are flushed on the next "while you were out"
 # catch-up or when afk is re-entered.
 #
-# IN-BAND SENTINEL MARKER. Every daemon injection is prefixed with
-# FM_INJECT_MARK (U+2063 INVISIBLE SEPARATOR), a character a human cannot type
-# from a normal keyboard at the start of a message and Herdr transports as text.
-# Firstmate's contract: a message that starts with the marker is an internal
-# escalation (stay afk); a message without it means the captain is back (exit
-# afk, flush catch-up, resume per-wake responsiveness). The marker and the
-# busy-guard solve the same problem - the daemon and the human share one input
-# channel - so they live together under /afk.
+# IN-BAND OPERATIONAL INPUT. bin/fm-operational-input.sh constructs every
+# current daemon injection as the typed away-supervisor kind. Firstmate's
+# contract classifies only a current envelope or a narrowly enumerated legacy
+# form as internal; an unclassified message means the captain is back. The
+# envelope and the busy-guard solve the same shared-input-channel problem, so
+# they live together under /afk.
 #
 # Reliability model (see the /afk skill):
 #   - Nothing is lost in away mode: while state/.afk exists, the watcher reverts
@@ -153,6 +151,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$FM_DAEMON_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-operational-input.sh
+. "$FM_DAEMON_DIR/fm-operational-input.sh"
 
 # Shared wake classifier (last_status_line, status_is_captain_relevant,
 # window_to_task, scan_captain_relevant_statuses). The SAME library backs the
@@ -205,16 +205,10 @@ CRASH_NORMAL_SLEEP_DEFAULT=5
 LOG_MAX_BYTES_DEFAULT=1048576
 LOG_KEEP_LINES_DEFAULT=2000
 
-# --- presence-gating + sentinel marker --------------------------------------
-# The in-band sentinel: U+2063 INVISIBLE SEPARATOR (UTF-8 e2 81 a3). It has no
-# normal keyboard keystroke, so no real user message starts with it. Unlike the
-# original ASCII unit separator, Herdr transports U+2063 through Pi's terminal
-# editor as text instead of consuming it as a control action. Every daemon
-# injection is prefixed with this character; firstmate treats a leading marker
-# as an internal escalation (stay afk) and its absence as "captain is back"
-# (exit afk). Portable across harnesses: it travels with the message text,
-# independent of any harness-level typed-vs-injected distinction.
-FM_INJECT_MARK=$'\xE2\x81\xA3'
+# --- presence-gating --------------------------------------------------------
+# bin/fm-operational-input.sh owns current and legacy classification. Arbitrary
+# U+2063-prefixed text is not an injection; only a valid current envelope or an
+# exact legacy producer form keeps away mode active.
 AFK_FLAG_NAME=".afk"
 
 # Resolve the effective state dir. FM_STATE_OVERRIDE wins (testing); otherwise
@@ -260,10 +254,10 @@ afk_exit() {  # <state>
 
 # should_exit_afk: encodes firstmate's afk-exit contract as a testable function.
 #   afk inactive            -> 1 (nothing to exit)
-#   message has marker      -> 1 (internal escalation; stay afk)
+#   message classifies      -> 1 (internal operational input; stay afk)
 #   message is /afk command -> 1 (re-entering/extending afk; stay afk)
 #   anything else           -> 0 (captain is back; exit afk)
-# Bias toward exit: only the marker and an explicit /afk invocation keep afk
+# Bias toward exit: only owner-classified input and an explicit /afk keep afk
 # alive. A false exit is self-correcting (the captain re-runs /afk).
 should_exit_afk() {  # <state> <message-text>
   local state=$1 msg=$2
@@ -275,26 +269,28 @@ should_exit_afk() {  # <state> <message-text>
   return 0
 }
 
-# message_is_injection: 0 if the given message text starts with the sentinel
-# marker (a daemon escalation), 1 otherwise (a real user message). Firstmate's
-# afk-exit contract uses this: marker present -> stay afk; absent -> captain is
-# back. Bias ambiguous cases toward exit (a false exit is self-correcting).
+# message_is_injection: 0 only for a structurally valid current or explicitly
+# recognized legacy operational input. Bias malformed and near-miss text toward
+# exit so copied marker bytes never impersonate a daemon or firstmate producer.
 message_is_injection() {  # <message-text>
-  local msg=$1
-  [ -n "$msg" ] || return 1
-  case "$msg" in
-    "$FM_INJECT_MARK"*) return 0 ;;
-  esac
-  return 1
+  local kind
+  fm_operational_input_classify "${1-}" kind
 }
 
-# strip_injection_marker: remove the leading sentinel marker (if present) so the
-# digest text is clean for classification/relay. The afk-exit contract keys off
-# the marker's PRESENCE; once detected, the marker byte should not appear in the
-# distilled content firstmate relays to the captain or feeds back to classifiers.
+# strip_injection_marker removes the typed envelope from current input and the
+# exact compatibility marker from recognized legacy input. Unclassified text is
+# returned unchanged.
 strip_injection_marker() {  # <message-text>
-  local msg=$1
-  printf '%s' "${msg#"$FM_INJECT_MARK"}"
+  local msg=${1-} body
+  if fm_operational_input_body "$msg" body; then
+    printf '%s' "$body"
+    return
+  fi
+  if fm_legacy_operational_input_body "$msg" body; then
+    printf '%s' "$body"
+    return
+  fi
+  printf '%s' "$msg"
 }
 
 # Collapse all newlines to a literal " - " separator so the injected digest is
@@ -1063,7 +1059,7 @@ window_for_task() {  # <task-key> [state]
 # Submit model:
 #   - TYPE ONCE, then submit with Enter. Never retype the digest: a swallowed
 #     Enter leaves our text in the composer, and retyping would concatenate two
-#     sentinel-prefixed digests into one corrupted turn.
+#     operational envelopes into one corrupted turn.
 #   - SUBMIT ACK = the backend submit primitive reports `empty` after Enter.
 #     For tmux that means a cleared composer; for herdr's normal idle-baseline
 #     path it means native agent-state observed a real turn start.
@@ -1074,18 +1070,17 @@ window_for_task() {  # <task-key> [state]
 #     line, or a previous injection's unsent text), defer entirely - injecting
 #     would merge with the human's text.
 inject_msg() {  # <message> [state]
-  local msg=$1 state target backend retries sleep_s verdict composer
+  local msg=$1 state target backend retries sleep_s verdict composer encoded
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
   # watcher triage. Escalations buffer and survive for the next catch-up flush.
   afk_active "$state" || { log "inject deferred: afk inactive"; return 1; }
-  # (2) Single-line digest: collapse any embedded newlines so submission via
-  # send-keys + Enter is unambiguous regardless of how the TUI composer treats
-  # them. Then prepend the sentinel marker - firstmate's afk-exit contract
-  # keys off its presence at the start of the message.
+  # (2) Single-line digest: collapse embedded newlines, then construct the
+  # canonical typed envelope. The payload remains opaque to the classifier.
   msg=$(_collapse_newlines "$msg")
-  msg="${FM_INJECT_MARK}${msg}"
+  fm_operational_input_encode away-supervisor "$msg" encoded || return 1
+  msg=$encoded
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
   # BACKEND-AWARE (previously a raw `tmux display-message` pane-exists probe):
   # dispatches through bin/fm-backend.sh so a herdr supervisor pane is checked

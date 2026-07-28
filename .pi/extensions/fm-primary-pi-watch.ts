@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
 
 type ArmResult = {
   ok: boolean;
@@ -93,10 +94,10 @@ export default function (pi: ExtensionAPI) {
   process.once("exit", cleanupOnProcessExit);
 
   async function sendWake(message: string) {
-    await pi.sendUserMessage(
-      `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first, handle the queued wake, then resume Pi supervision.`,
-      { deliverAs: "followUp" },
-    );
+    const body = `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first, handle the queued wake, then resume Pi supervision.`;
+    await pi.sendUserMessage(encodeFirstmateOperationalInput("watcher", body), {
+      deliverAs: "followUp",
+    });
   }
 
   function startArm(): ArmResult {

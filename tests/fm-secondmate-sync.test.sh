@@ -386,7 +386,7 @@ test_bootstrap_sweep_nudges_only_instruction_change() {
   assert_not_contains "$out" "NUDGE_SECONDMATES:" "successful nudge must not leave a firstmate action item"
   assert_not_contains "$out" "sm-readme" "readme-only advance is not nudged"
   assert_not_contains "$out" "sm-current" "already-current secondmate is not nudged"
-  assert_contains "$(cat "$log")" "[fm-from-firstmate]" "nudge send should use the marked fm-send secondmate path"
+  assert_contains "$(cat "$log")" "FIRSTMATE_OP: v1 from-firstmate:" "nudge send should use the typed fm-send secondmate path"
   assert_contains "$(cat "$log")" "firstmate was updated to the latest - please re-read your AGENTS.md" \
     "nudge send should type the exact re-read message"
   marker_dir="$w/home/state/.secondmate-nudge-pending"
@@ -422,8 +422,8 @@ test_bootstrap_nudge_send_uses_state_override() {
     "nudge send should resolve fm-sm-instr through the effective state dir"
   assert_not_contains "$out" "NUDGE_SECONDMATES:" \
     "effective-state nudge should not fail through FM_HOME/state"
-  assert_contains "$(cat "$log")" "[fm-from-firstmate]" \
-    "effective-state nudge should still use secondmate marker metadata"
+  assert_contains "$(cat "$log")" "FIRSTMATE_OP: v1 from-firstmate:" \
+    "effective-state nudge should still use secondmate metadata"
   marker="$override_state/.secondmate-nudge-pending/sm-instr.pending"
   assert_absent "$marker" "successful effective-state nudge should clear its retry marker"
   pass "T8a bootstrap nudge send respects FM_STATE_OVERRIDE"

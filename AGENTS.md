@@ -25,7 +25,7 @@ Hard rules, in priority order:
    The only exceptions are the guarded project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, and approved `local-only` merge paths owned by their referenced skills and scripts.
    Those paths never authorize forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`.
 2. **Never merge a PR without the captain's explicit word.**
-   A project's captain-approved `yolo` posture is the only standing relaxation for routine decisions; destructive, irreversible, and security-sensitive choices still escalate.
+   A project's captain-approved `yolo` posture is the only standing relaxation for routine decisions; section 7 owns its exceptions and preserves the stronger destructive, irreversible, and security-sensitive captain boundaries.
 3. **Never tear down unlanded work.**
    Uncommitted changes are never landed, and `bin/fm-teardown.sh` owns the complete landed-work test.
    Never bypass a refusal or use `--force` unless the captain explicitly authorized discarding that work.
@@ -164,6 +164,7 @@ The generic effort fallback and its precedence are owned by `harness-adapters`: 
 Do not add model-specific versions of that policy.
 
 `secondmate-provisioning` owns secondmate harness pins and inherited local material, while `harness-adapters` owns the harness consequences.
+A primary session must not create invisible project work through native delegation tools; `bin/fm-subagent-pretool-check.sh` and `docs/subagent-guard.md` own the scoped enforcement and workers in isolated task copies retain legitimate delegation tooling.
 Dispatch only on a backend that `fm-spawn` validates as spawn-capable.
 A missing dependency, authentication failure, unsupported backend, or version refusal is a blocker; never silently retry on another backend.
 
@@ -264,7 +265,10 @@ The path's worker, automated gates, and captain approval remain authoritative:
 
 Delivery mode and `yolo` are orthogonal.
 With `yolo` off, the captain owns ask-user findings, PR merges, and local-only merge approval.
-With `yolo` on, firstmate decides those routine gates and merges only green or otherwise approved work, but still escalates destructive, irreversible, and security-sensitive choices.
+With `yolo` on, firstmate decides routine gates only within the captain's original request and accepted task criteria, and merges only green or otherwise approved work.
+Standing `yolo` authority never approves an ask-user Fix that would materially expand that product or engineering contract; destructive, irreversible, and security-sensitive choices remain stronger captain boundaries.
+Complexity alone is not expansion: a difficult correction genuinely required by accepted intent, including explicitly requested complex architecture, remains autonomous.
+Before deciding any ask-user finding, load `ask-user-authority`; the implementation worker never answers its own finding, and a finding decision never grants merge authority.
 Never merge a red PR.
 Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
@@ -348,10 +352,10 @@ Harness-aware turn-end guards are structural backstops, not permission to omit t
 
 ### Away-mode stub
 
-Invoke the `/afk` skill when the captain says `/afk`, says they are going afk, `state/.afk` exists, an incoming message starts with `FM_INJECT_MARK`, or any `state/.subsuper-*` marker is involved.
+Invoke the `/afk` skill when the captain says `/afk`, says they are going afk, `state/.afk` exists, an incoming message classifies as a current or explicit legacy operational input through `bin/fm-operational-input.sh`, or any `state/.subsuper-*` marker is involved.
 The skill owns the daemon procedure; these safety facts remain inline:
 
-- Every daemon injection starts with `FM_INJECT_MARK` plus U+2063 INVISIBLE SEPARATOR, which distinguishes internal escalation from captain input.
+- Every current daemon injection uses the canonical `away-supervisor` operational-input kind; arbitrary U+2063 text and malformed or near-miss envelopes remain captain input.
 - While `state/.afk` exists, the daemon owns supervision; do not arm a separate watcher.
 - A marked message while away mode is active is internal escalation and does not exit away mode.
 - A message beginning `/afk` refreshes away mode.
@@ -455,6 +459,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 
 - `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `NEEDS_GITLAB_AUTH:`, `TANGLE:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `NUDGE_SECONDMATES:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
+- `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
 - `firstmate-orca` - load before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
 - `project-management` - load before adding, creating, removing, or initializing a project.

@@ -13,13 +13,14 @@ HARNESS="$ROOT/.agents/skills/harness-adapters/SKILL.md"
 CODING="$ROOT/.agents/skills/firstmate-coding-guidelines/SKILL.md"
 RECOVERY="$ROOT/.agents/skills/stuck-crewmate-recovery/SKILL.md"
 SECONDMATE="$ROOT/.agents/skills/secondmate-provisioning/SKILL.md"
+ASK_USER="$ROOT/.agents/skills/ask-user-authority/SKILL.md"
 CONFIG="$ROOT/docs/configuration.md"
 AGENTS="$ROOT/AGENTS.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
 
 test_new_skill_metadata_and_triggers() {
   local skill name count
-  for pair in "diagnostic-reasoning:$DIAG" "project-management:$PROJECT"; do
+  for pair in "diagnostic-reasoning:$DIAG" "project-management:$PROJECT" "ask-user-authority:$ASK_USER"; do
     name=${pair%%:*}
     skill=${pair#*:}
     assert_present "$skill" "$name skill is missing"
@@ -37,6 +38,10 @@ test_new_skill_metadata_and_triggers() {
     "project-management skill metadata lost its precise load trigger"
   assert_grep '`project-management` - load before adding, creating, removing, or initializing a project.' "$ROOT/AGENTS.md" \
     "AGENTS.md lost the project-management trigger"
+  assert_grep 'Use before deciding any ask-user finding, regardless of the project' "$ASK_USER" \
+    "ask-user authority skill metadata lost its precise load trigger"
+  assert_grep '`ask-user-authority` - load before deciding any ask-user finding, regardless of the project' "$ROOT/AGENTS.md" \
+    "AGENTS.md lost the ask-user-authority trigger"
   pass "new internal skills have one precise AGENTS.md trigger each"
 }
 

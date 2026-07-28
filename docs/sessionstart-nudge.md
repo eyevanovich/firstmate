@@ -1,12 +1,12 @@
 # Native session-start nudge
 
 AGENTS.md section 3 remains the single authoritative behavioral contract for session start.
-The tracked native adapters are an enforcement layer that injects one instruction and never runs the digest, lock acquisition, bootstrap sweeps, wake drain, or supervision arm itself.
-The injected line is exactly ``Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.``
+The tracked native adapters are an enforcement layer that injects one typed operational input and never runs the digest, lock acquisition, bootstrap sweeps, wake drain, or supervision arm itself.
+Its body is exactly ``Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.`` and `bin/fm-operational-input.sh` owns the outer `session-start` envelope.
 
 ## Shared wrapper and safety
 
-`bin/fm-sessionstart-nudge.sh` is the single command every harness adapter invokes.
+`bin/fm-sessionstart-nudge.sh` is the single command every harness adapter invokes, and it delegates construction to `bin/fm-operational-input.sh`.
 It sources `bin/fm-gate-refuse-lib.sh` and stays silent for a no-mistakes gate agent identified by `NO_MISTAKES_GATE` or a `.no-mistakes/repos/*.git` git-common-dir.
 It shares `bin/fm-primary-scope-lib.sh` with `bin/fm-turnend-guard.sh`, so the two hooks cannot drift on primary detection.
 The Shared Predicate section of `docs/turnend-guard.md` remains authoritative for marker validation, plain-checkout detection, and the required firstmate-shaped paths.
