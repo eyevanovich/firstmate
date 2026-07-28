@@ -788,7 +788,7 @@ ROWS
 }
 
 test_empty_home_github_preflight() {
-  local case_dir home fakebin out rc
+  local case_dir home fakebin bash_env out rc
   case_dir="$TMP_ROOT/empty-home-github-preflight"
   home="$case_dir/home"
   mkdir -p "$home/config"
@@ -796,7 +796,21 @@ test_empty_home_github_preflight() {
   fakebin=$(make_fake_toolchain "$case_dir")
 
   rm -f "$fakebin/gh" "$fakebin/gh-axi"
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
+  # gh is installed on some CI hosts, so mask the system copy as well as
+  # removing the fake one. Otherwise this case tests host authentication state.
+  bash_env="$case_dir/no-gh.bash"
+  cat > "$bash_env" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = gh ]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+gh() {
+  return 127
+}
+SH
+  out=$(PATH="$fakebin:$BASE_PATH" BASH_ENV="$bash_env" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" \
     "$ROOT/bin/fm-bootstrap.sh" check-forge github 2>&1)
   rc=$?
   expect_code 1 "$rc" "empty-home GitHub preflight with missing tools"
