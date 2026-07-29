@@ -285,7 +285,7 @@ fm_lock_recheck_stale_owner() {
 }
 
 fm_lock_try_acquire() {
-  local lockdir=$1 pid identity current_identity steal cur rc steal_owner primary_owner
+  local lockdir=$1 steal_depth=${2:-0} pid identity current_identity steal cur rc steal_owner primary_owner
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
 
@@ -307,8 +307,12 @@ fm_lock_try_acquire() {
     return 1
   fi
 
+  # A stale primary lock is serialized through a companion steal lock. Permit
+  # one bounded level to reclaim a stale companion, but never recurse through
+  # an unbounded .steal chain when process identity cannot be captured.
+  [ "$steal_depth" -lt 2 ] || return 1
   steal="$lockdir.steal"
-  if ! fm_lock_try_acquire "$steal"; then
+  if ! fm_lock_try_acquire "$steal" $((steal_depth + 1)); then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
     return 1

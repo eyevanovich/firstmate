@@ -289,6 +289,23 @@ test_lock_live_steal_mutex_is_not_reclaimed() {
   pass "live steal mutex is not reclaimed"
 }
 
+test_lock_identity_failure_is_bounded() {
+  local dir state lock out status
+  dir=$(make_case lock-identity-failure)
+  state="$dir/state"
+  lock="$state/.bounded.lock"
+  mkdir -p "$lock"
+  printf '%s\n' 99999999 > "$lock/pid"
+
+  status=0
+  out=$(/bin/bash -c '. "$1"; fm_pid_identity() { return 1; }; fm_lock_try_acquire "$2"' \
+    _ "$LIB" "$lock" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "identity-less stale lock unexpectedly acquired"
+  [ ! -e "$lock.steal.steal" ] && [ ! -L "$lock.steal.steal" ] \
+    || fail "identity failure recursed beyond the bounded steal mutex"
+  pass "identity failure keeps stale-lock acquisition bounded"
+}
+
 test_lock_does_not_steal_live_lock() {
   local dir state lockdir live out lockpid
   dir=$(make_case lock-live-noop)
@@ -1026,6 +1043,7 @@ test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
+test_lock_identity_failure_is_bounded
 test_lock_does_not_steal_live_lock
 test_lock_empty_pid_uses_minimum_grace
 test_lock_late_claim_loses_after_recreate
