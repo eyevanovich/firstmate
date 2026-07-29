@@ -164,7 +164,7 @@ test_settings_registers_autoarm_with_multi_hour_timeout() {
     [.hooks.Stop[].hooks[] | select(.command | contains("fm-claude-stop-autoarm.sh"))][0].command
       | contains("&") | not
   ' "$settings" >/dev/null || fail "auto-arm registration must not use shell fire-and-forget"
-  grep -q '"$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1' "$ROOT/bin/fm-claude-stop-autoarm.sh" \
+  grep -Fq '"$SCRIPT_DIR/fm-watch-arm.sh" --successor-cycles >"$OUT" 2>&1' "$ROOT/bin/fm-claude-stop-autoarm.sh" \
     || fail "auto-arm must foreground the arm wrapper inside the hook-owned process tree"
   grep -q 'asyncRewake' "$ROOT/bin/fm-claude-stop-autoarm.sh" \
     || fail "auto-arm header must document its asyncRewake registration contract"
