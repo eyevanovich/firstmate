@@ -28,7 +28,9 @@ After each drain, `fm-wake-drain.sh` runs the same liveness guard as the supervi
 Routine watcher polling, supervision no-ops, elapsed waiting time, and absorbed benign wakes stay silent.
 A declared external wait trades that silence for one bounded recheck per pause window, so a forgotten pause cannot remain invisible indefinitely.
 Crew status files are append-only wake-event logs, not current-state fields.
-`bin/fm-crew-state.sh <id>` is the cheap current-state read for an actionable heartbeat review: it attributes the matching no-mistakes run, active or terminal, to the crew's own branch and keeps that run-step authoritative even if the pane has closed.
+`bin/fm-crew-state.sh <id>` is the cheap current-state read for an actionable heartbeat review: it attributes the matching no-mistakes run, active or terminal, only when the run head equals or validly descends from the crew worktree HEAD, and keeps that run-step authoritative even if the pane has closed.
+Branch name alone never binds a historical, rewritten, diverged, missing-head, or locally superseded run to the crew.
+No-mistakes observer panes, daemon terminals, persistent secondmate endpoints, project/tool diagnostics, and unrelated backend windows do not create worker current state; task metadata plus exact code identity remain the attribution boundary.
 During no-mistakes' `ci` monitor phase, it also reads the ci step log tail because `axi status` reports both "still waiting on checks" and "checks green, waiting on merge" as `ci,running`.
 The most recent recognized ci log marker wins, so checks-green monitoring reports done while a later re-arm, failed-check, or issue marker returns the crew to working.
 Only when no matching run exists does it fall back to the pane busy-signature and then a status-log event whose verb maps to a recognized run-state; a dead pane without a run reports unknown instead of trusting a stale log.
@@ -55,15 +57,18 @@ At session start, `bin/fm-session-start.sh` emits exactly one primary-harness su
 That block owns the live wait shape for the running primary harness: Claude and Grok use background-notify cycles, Codex uses bounded foreground checkpoints, Pi uses its two tracked primary extensions, and OpenCode uses its TUI plugin.
 `bin/fm-watch-arm.sh` remains the verified arm wrapper for protocols that call it; it forks the watcher as a tracked child, verifies it is genuinely alive with a fresh liveness beacon, and prints exactly one honest status line (`started` / `attached` / restart-only `healthy` / `FAILED`, the last exiting non-zero).
 On `attached` it stays live until that existing cycle ends so background-notify harnesses do not get an empty false wake from a healthy no-op exit.
+Pi and OpenCode keep that arm lifecycle above the one-shot watcher: one bounded successor is verified before canonical wake delivery, while Claude starts the next cycle from its Stop-owned async hook.
+`docs/watcher-continuity.md` owns successor, retry, lock-loss, shutdown, and private-record mechanics.
 Its `--restart` mode signals only the watcher recorded in the current home's `state/.watch.lock`, so restarting one home cannot kill sibling secondmate watchers.
 A pull-based guard (`bin/fm-guard.sh`) warns through supervision tool output if the primary checkout is tangled, or if tasks are in flight and that watcher stops running or queued wakes are waiting to be drained.
 The drain script calls that guard after emptying the queue, which avoids repeating the queued-wakes warning for records it just consumed while still warning on stale watcher liveness.
 It leads with a prominent bordered tangle banner, while `bin/fm-guard.sh` owns the stale-watcher banner/reminder policy so repeated guarded commands stay noisy without reprinting the full watcher-down banner in the same episode.
-On every verified primary harness, tracked hook integration gives the primary session a push-based backstop: when work is in flight and no identity-matched watcher lock with a fresh beacon is live, direct Stop hooks block and passive turn-end hooks force one bounded follow-up.
+On every verified primary harness, tracked hook integration gives the primary session a push-based backstop: when supervision is needed and no identity-matched watcher lock with a fresh beacon is live, direct Stop hooks block or cooperate with Claude's bounded auto-arm claim, while passive turn-end hooks force one bounded recovery follow-up.
 The guard covers the main primary and genuinely marked secondmate homes, exempts child crewmate/scout worktrees, is loop-safe per harness, and is documented in [turnend-guard.md](turnend-guard.md).
 
 A presence-gated sub-supervisor (`bin/fm-supervise-daemon.sh`) extends this for walk-away supervision: the `/afk` skill starts it through the tracked foreground helper `bin/fm-afk-start.sh`, after which the watcher reverts to daemon-managed one-shot mode and the daemon self-handles routine wakes in bash.
-The watcher and daemon share `bin/fm-classify-lib.sh` for captain-relevant status verbs, declared-external-wait vocabulary, and status-scan primitives.
+The watcher and daemon share `bin/fm-classify-lib.sh` for structured terminal status verbs, declared-external-wait vocabulary, narrow legacy free-text compatibility, and status-scan primitives.
+A nonterminal `working:`, `resolved:`, or `captain-held:` event never becomes terminal merely because its prose contains words such as "merged" or "failed", so each idle pane's possible-wedge marker keeps aging independently.
 The always-on watcher also uses that library's absorb classification on no-verb signals and first-sighting stale panes before status-log terminality is trusted, while the daemon maintains distinct wedge and declared-pause recheck cadences.
 The daemon escalates captain-relevant events, plus a bounded recheck for a declared pause that remains idle, as one batched, single-line digest using the typed operational-input contract documented in [operational-inputs.md](operational-inputs.md).
 Its supervisor injection path supports tmux and herdr panes, with `FM_SUPERVISOR_BACKEND` and `FM_SUPERVISOR_TARGET` resolved independently from the task-spawn backend.

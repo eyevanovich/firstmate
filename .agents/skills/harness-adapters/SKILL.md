@@ -103,11 +103,11 @@ The supported launch-profile flags below are verified locally; each row records 
 
 | Harness | Model flag | Effort flag | Notes |
 |---|---|---|---|
-| claude | `--model <model>` | `--effort <low\|medium\|high\|xhigh\|max>` | Verified on Claude Code 2.1.196. |
+| claude | `--model <model>` | `--effort <low\|medium\|high\|xhigh\|max>` | Parser and hook startup re-verified on Claude Code 2.1.211 (2026-07-28); the model turn was blocked by expired OAuth. |
 | codex | `--model <model>` | `-c 'model_reasoning_effort="<low\|medium\|high\|xhigh>"'` | Verified on codex-cli 0.142.1. The installed binary schema contains `model_reasoning_effort`, the active config uses it, and the bundled model catalog advertises only low/medium/high/xhigh. `max` is omitted. |
 | grok | `--model <model>` | `--reasoning-effort <low\|medium\|high>` | Verified on grok 0.2.99 (2026-07-13). `--effort` is an alias, but firstmate's profile axis is reasoning effort. As of 0.2.99 the ceiling is `high`; both `xhigh` and `max` are rejected with `use one of: high, medium, low`, so firstmate omits them. |
-| pi | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-07-13 on Pi 0.80.6. `pi --help` advertises `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; `pi --print --model openai-codex/gpt-5.6-sol --thinking max 'Reply with exactly OK.'` completed successfully. |
-| opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
+| pi | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Help and low-thinking interactive launch re-verified 2026-07-28 on Pi 0.81.1. `pi --help` advertises `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the earlier max-thinking completion remains verified on 0.80.6. |
+| opencode | `--model <provider/model>` | none for firstmate's interactive launch | Persistent interactive launch re-verified on OpenCode 1.18.4 (2026-07-28). `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 
 When a requested effort value is outside the harness-specific accepted set, `fm-spawn` records the requested `effort=` in meta but emits no effort flag for that harness.
 This preserves launch success instead of passing a known-bad value.
@@ -146,7 +146,9 @@ The firstmate PRIMARY's own `.claude/settings.json` registers `bin/fm-turnend-gu
 Claude Code's stdin payload to a Stop hook carries a `stop_hook_active` boolean that is `true` exactly when the current stop attempt is itself a forced continuation from an earlier block this turn; a hook can and should use that as its own loop-guard (always allow the stop when it is already `true`) rather than tracking state itself.
 A project-level `.claude/settings.json` only takes effect when Claude Code's project root is that exact directory - it does not walk up from a subdirectory looking for one, so firstmate launches the primary from the repo root.
 After those settings are loaded, hook command resolution is still cwd-sensitive because Claude Code runs commands through `/bin/sh` against the session's current cwd; keep the tracked command anchored through `"$CLAUDE_PROJECT_DIR"/bin/fm-turnend-guard.sh` and see `docs/turnend-guard.md` for the verified Stop-hook details.
-Claude Code's primary watcher protocol is the lowest-friction path: run `bin/fm-watch-arm.sh` as its own Claude Code background task and treat background-task completion as the wake.
+Claude Code's primary watcher protocol is Stop-hook-owned: the tracked async `bin/fm-claude-stop-autoarm.sh` foregrounds one watcher arm inside the hook-owned process tree and rewakes Claude on an actionable close.
+Do not issue an arm command after an ordinary wake; the next Stop owns the successor.
+Use `bin/fm-watch-arm.sh` as its own Claude Code background task only for a reported missing, failed, or unhealthy cycle.
 
 ## codex (VERIFIED 2026-06-11, codex-cli 0.139.0)
 
@@ -179,7 +181,7 @@ The tracked hook anchors to `pwd -P`, verifies that root is firstmate-shaped and
 Codex's primary watcher protocol is `bin/fm-watch-checkpoint.sh --seconds "${FM_CODEX_WATCH_CHECKPOINT:-180}"`, not `bin/fm-watch-arm.sh`.
 The checkpoint is deliberately foreground and bounded so Codex regains control regularly to process user messages and queued wakes.
 
-## opencode (VERIFIED 2026-06-11, v1.15.7-1.17.6)
+## opencode (VERIFIED 2026-06-11, v1.15.7-1.17.6; continuity re-verified 2026-07-28 on 1.18.4)
 
 | Fact | Value |
 |---|---|
@@ -195,10 +197,10 @@ If a pane shows the exit banner, relaunch with `--continue` to resume the sessio
 **Primary-session guard fact (verified 2026-07-08, OpenCode 1.17.6).**
 The firstmate PRIMARY's own `.opencode/plugins/fm-primary-turnend-guard.js` listens for `session.idle`.
 Throwing from `session.idle` does not block `opencode run`, so the primary adapter treats the event as passive and uses `client.session.promptAsync` to force one follow-up turn when `bin/fm-turnend-guard.sh` returns 2.
-The companion `.opencode/plugins/fm-primary-watch-arm.js` owns normal TUI watcher wake supervision and coordinates with the guard plugin before the guard tries a blind-turn follow-up.
+The companion `.opencode/plugins/fm-primary-watch-arm.js` owns normal TUI watcher wake supervision, verifies one bounded successor before canonical wake delivery, and coordinates with the guard plugin before the guard tries a blind-turn follow-up.
 The follow-up was verified in the interactive TUI; `opencode run` can exit before displaying a queued follow-up, so the adapter is fail-open in headless mode.
 
-## pi (VERIFIED 2026-06-11)
+## pi (VERIFIED 2026-06-11; continuity re-verified 2026-07-28 on 0.81.1)
 
 | Fact | Value |
 |---|---|
@@ -222,7 +224,8 @@ Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection e
 The firstmate PRIMARY's own `.pi/extensions/fm-primary-turnend-guard.ts` listens for logical-run `agent_settled`, not per-tool-loop `turn_end`, and uses `pi.sendUserMessage(..., { deliverAs: "followUp" })` to force one guarded follow-up when `bin/fm-turnend-guard.sh` returns 2.
 Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still processing.
 Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-primary-pi-watch.ts` extension, same trust-once discovery as the turn-end guard.
-The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
+The model uses `fm_watch_arm_pi` for the first cycle or a reported missing, failed, or unhealthy cycle, never a foreground bash arm; ordinary successors are extension-owned and start before canonical wake delivery.
+The watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
 `bin/fm-session-start.sh` reports when the live Pi session has not loaded both the turn-end guard and watcher extensions, and points at plain `pi` after project trust as the fix, with `-e` as a trust-free fallback.
 When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` launches Pi with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
 
