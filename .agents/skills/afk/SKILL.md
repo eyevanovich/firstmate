@@ -136,18 +136,17 @@ While `state/.afk` exists the daemon owns the watcher, so the watcher reverts to
 
 Classify each wake this way:
 
-- `signal` whose status content has no captain-relevant verb
-  (`done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged`)
-  -> self-handle. Captain-relevant verb -> escalate.
+- `signal` status events are classified by their structured leading verb.
+  Terminal verbs (`done:`, `needs-decision:`, `blocked:`, `failed:`) escalate; nonterminal verbs such as `working:`, `resolved:`, and `captain-held:` self-handle even when incidental prose contains words such as "merged" or "failed".
+  The narrow legacy free-text matcher remains only for unstructured historical lines.
 - `signal` or `stale` for a declared `paused:` external wait -> self-handle and track the pause rather than a wedge.
   If it remains declared and idle past `FM_PAUSE_RESURFACE_SECS` (default 3600s), housekeeping sends one awaiting-external recheck and resets the pause window.
 - `check` -> always escalate. Check scripts print only when firstmate should wake.
-- `stale` with a terminal status -> escalate. Non-terminal stale is transient:
-  record a marker and self-handle. If the pane is still idle past
-  `FM_STALE_ESCALATE_SECS` (default 240s), housekeeping escalates it as a
-  possible wedge. This bounds wedge-detection latency to the threshold plus a
-  tick: a delay, never a loss. Healthy crewmates are autonomous and do not wait
-  on firstmate mid-task.
+- `stale` with a structured terminal verb -> escalate.
+  A nonterminal stale event records its own marker and self-handles even if incidental prose matched the legacy captain regex.
+  If that pane remains idle past `FM_STALE_ESCALATE_SECS` (default 240s), housekeeping escalates its independently aged marker as a possible wedge.
+  This bounds wedge-detection latency to the threshold plus a tick: a delay, never a loss.
+  Healthy crewmates are autonomous and do not wait on firstmate mid-task.
 - `heartbeat` -> self-handle. The daemon runs its own cheap bash fleet scan
   every `FM_HEARTBEAT_SCAN_SECS` (default 300s) as the catch-all for a
   captain-relevant status line the per-wake classifier might miss.

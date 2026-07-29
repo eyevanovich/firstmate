@@ -18,6 +18,7 @@ The tracked code root contains the shared instruction, skill, documentation, wor
 `bin/fm-no-mistakes-observer.sh` owns the separate `state/<id>.observer` identity record, its exact fields, and its lifecycle.
 The producing PR and X helpers own the fields they append, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
 Wake, watcher, away-mode, and X-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
+`docs/watcher-continuity.md` indexes the bounded watcher-cycle and Claude cooperation records to their producing owners; those private files are diagnostics and coordination evidence, never operator-editable inputs.
 
 `bin/fm-session-start.sh`'s header is the single owner of session-start ordering, composed commands, digest contents, and the digest's startup mechanism.
 `docs/sessionstart-nudge.md` owns the native session-open adapter mechanics that nudge the digest command.
@@ -188,7 +189,7 @@ The verified adapter knowledge - busy signatures, interrupt and exit commands, s
 Launch mechanics, including the verified command templates, live in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
 Primary-session turn-end guard integrations for verified harnesses are tracked as repo-level hook files and documented in [`docs/turnend-guard.md`](turnend-guard.md).
 Primary-session watcher wake protocols are rendered at session start by [`bin/fm-supervision-instructions.sh`](../bin/fm-supervision-instructions.sh) from [`docs/supervision-protocols/`](supervision-protocols/).
-Claude and Grok use background-notify cycles, Codex uses bounded foreground checkpoints, Pi uses its two tracked primary extensions, and OpenCode uses its TUI plugin.
+Claude uses a Stop-hook-owned tokenless cycle, Grok uses a background-notify cycle, Codex uses bounded foreground checkpoints, Pi uses its two tracked primary extensions, and OpenCode uses its TUI plugin.
 `config/crew-harness` is a local, gitignored file containing one adapter name for crewmate and scout launches.
 When it is absent or contains `default`, crewmates mirror the firstmate's own harness.
 `config/secondmate-harness` is a separate local, gitignored file containing the adapter the primary uses to launch secondmate agents, optionally followed by model and effort tokens on the same line.
@@ -434,9 +435,19 @@ FM_GUARD_GRACE=300      # seconds before guard warnings, arm health checks, and 
 FM_ARM_CONFIRM_TIMEOUT=10   # seconds fm-watch-arm waits to confirm a fresh watcher before reporting FAILED
 FM_ARM_ATTACH_POLL=0.5  # seconds between checks while fm-watch-arm is attached to an existing healthy watcher cycle
 FM_OPENCODE_ARM_READY_TIMEOUT_MS=12000   # milliseconds the OpenCode primary watcher plugin waits for an arm attempt to report started, healthy, wake, or failure
+FM_PI_ARM_READY_TIMEOUT_MS=12000   # milliseconds the Pi watcher extension waits for a successor arm to report ready
+FM_WATCH_ARM_RETIRE_TIMEOUT_MS=1000   # milliseconds Pi/OpenCode wait for an unready arm to retire before refusing an overlapping retry
+FM_WATCH_REARM_RETRY_BASE_MS=250   # initial Pi/OpenCode unexpected-close retry delay
+FM_WATCH_REARM_RETRY_MAX_MS=4000   # maximum Pi/OpenCode exponential retry delay
+FM_WATCH_REARM_RETRY_LIMIT=5   # bounded Pi/OpenCode restoration retries before a typed failure
+FM_WATCH_CYCLE_LOG_MAX_BYTES=262144   # byte cap for state/.watch-cycle-exits.log
+FM_WATCH_CYCLE_LOG_KEEP_LINES=1000   # complete lifecycle records retained when the cycle log is capped
+FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=800   # bounded Stop-guard wait for Claude's async auto-arm claim
+FM_CLAUDE_AUTOARM_EPOCH_FRESH=15   # seconds an exact Claude rewake record may authorize the matching Stop
+FM_CLAUDE_TURNEND_BLOCK_BUDGET=3   # consecutive Claude Stop blocks before one visible degraded allow and budget reset
 FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE; seconds a live watcher lock may have a stale beacon before re-arm errors
 FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals into one wake
-FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # status regex that makes watcher and daemon signal/stale/scan output captain-relevant
+FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # legacy/free-text relevance fallback after structured nonterminal verbs have been suppressed
 FM_CLASSIFY_PAUSED_VERB=paused     # leading status verb for a declared external wait; excluded from FM_CAPTAIN_RE and distinct from blocked
 FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stale pane escalates; stale panes whose crew is not provably working surface immediately unless they declare the pause verb
 FM_PAUSE_RESURFACE_SECS=3600       # seconds before an idle declared external wait re-surfaces for a recheck in the watcher or away-mode daemon

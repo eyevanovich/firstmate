@@ -15,6 +15,7 @@ const extensionDir = dirname(extensionFile);
 const root = resolve(extensionDir, "../..");
 const fmHome = process.env.FM_HOME || process.env.FM_ROOT_OVERRIDE || root;
 const state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
+const primaryScopeLib = `${root}/bin/fm-primary-scope-lib.sh`;
 const marker = `${state}/.pi-turnend-extension-loaded`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 
@@ -50,8 +51,24 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
+function primaryScopeMatches(): boolean {
+  const result = spawnSync(
+    "bash",
+    ["-lc", '. "$FM_PRIMARY_SCOPE_LIB"; fm_primary_scope_matches "$FM_ROOT_OVERRIDE" "$FM_STATE_OVERRIDE"'],
+    {
+      env: {
+        ...process.env,
+        FM_PRIMARY_SCOPE_LIB: primaryScopeLib,
+        FM_ROOT_OVERRIDE: root,
+        FM_STATE_OVERRIDE: state,
+      },
+    },
+  );
+  return result.status === 0;
+}
+
 function markLoaded(): void {
-  if (!existsSync(state) || lockOwnership() === "other") return;
+  if (!existsSync(state) || !primaryScopeMatches() || lockOwnership() === "other") return;
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
 }
 
@@ -169,7 +186,7 @@ export default function (pi: ExtensionAPI) {
     try {
       const body =
         "TURN WOULD END BLIND - supervision is off. " +
-        "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
+        "The watcher cycle is missing, failed, or unhealthy. Follow the harness recovery instruction below before ending the turn.\n\n" +
         result.stderr;
       await pi.sendUserMessage(encodeFirstmateOperationalInput("turn-end-guard", body), {
         deliverAs: "followUp",

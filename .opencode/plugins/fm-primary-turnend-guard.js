@@ -77,7 +77,7 @@ export const FmPrimaryTurnendGuard = async ({ client, directory, worktree }) => 
       try {
         const body =
           "TURN WOULD END BLIND - supervision is off. " +
-          "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
+          "The watcher cycle is missing, failed, or unhealthy. Follow the harness recovery instruction below before ending the turn.\n\n" +
           result.stderr;
         const text = await encodeFirstmateOperationalInput(root, "turn-end-guard", body);
         await client.session.promptAsync({

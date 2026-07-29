@@ -104,6 +104,7 @@ state/               volatile runtime signals; gitignored
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
+  .watch-cycle-exits.log .claude-autoarm-* .turnend-claude-blocks   bounded primary-continuity internals owned by the watcher arm and Claude hooks; never touch
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
@@ -322,7 +323,8 @@ Fleet supervision is an always-loaded operational contract; `docs/architecture.m
 Whenever work is under way, keep exactly one live supervision cycle using the emitted protocol for this primary harness.
 X mode may require that same live cycle with no fleet work.
 Do not substitute another harness's wait shape, use shell `&`, or create a second cycle when a healthy one already exists.
-After every actionable wake, resume the emitted protocol as the final action before ending the turn.
+After an actionable wake, follow the emitted protocol's ordinary-wake ownership: Pi and OpenCode establish their successor before delivery, Claude re-arms from its Stop hook, while Codex and Grok keep their documented continuation shapes.
+Manual arm is first-cycle or genuine-recovery work only where that protocol says so; never duplicate an adapter-owned successor.
 No turn ends blind while work is under way, including turns described as holding or waiting.
 
 At the start of every wake-handling turn, drain the durable wake queue before peeking, reading beyond the reason line, steering, or starting work.
