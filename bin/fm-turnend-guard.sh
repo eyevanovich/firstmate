@@ -175,10 +175,12 @@ fi
 # window to prove it owns recovery for this event epoch before consuming one of
 # Claude's bounded continuations.
 autoarm_owns_recovery() {
-  local pid record outcome updated_at path_age record_age now
+  local pid identity current_identity record outcome updated_at path_age record_age now
   fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && return 0
   pid=$(cat "$STATE/.claude-autoarm.lock/pid" 2>/dev/null || true)
-  fm_pid_alive "$pid" && return 0
+  identity=$(cat "$STATE/.claude-autoarm.lock/pid-identity" 2>/dev/null || true)
+  current_identity=$(fm_pid_identity "$pid" 2>/dev/null || true)
+  [ -n "$identity" ] && [ "$identity" = "$current_identity" ] && return 0
   record=$(cat "$STATE/.claude-autoarm-epoch" 2>/dev/null || true)
   if [[ "$record" =~ ^epoch=([0-9]{1,20})\ owner_pid=([0-9]{1,20})\ outcome=(arming|afk|clean|rewake)\ updated_at=([0-9]{1,12})$ ]]; then
     outcome=${BASH_REMATCH[3]}

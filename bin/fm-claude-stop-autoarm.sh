@@ -138,10 +138,10 @@ write_epoch arming
 # model-driven background-task path, and propagates the wake reason on close.
 OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
 if [ -n "$OUT" ]; then
-  "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1
+  "$SCRIPT_DIR/fm-watch-arm.sh" --successor-cycles >"$OUT" 2>&1
   RC=$?
 else
-  "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1
+  "$SCRIPT_DIR/fm-watch-arm.sh" --successor-cycles >/dev/null 2>&1
   RC=$?
 fi
 

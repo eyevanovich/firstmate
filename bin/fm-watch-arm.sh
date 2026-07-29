@@ -36,11 +36,12 @@
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
 # returns the FAILED line. On started it waits the child and propagates the wake
-# reason; on attached it stays live across identity-matched successors. An
-# attached cycle that ends without a healthy successor is a typed nonzero failure,
-# never a clean empty completion. On FAILED it exits non-zero so the failure is
-# loud. A live cycle already present means re-arm attaches - do not start a second
-# watcher.
+# reason. Pi and OpenCode use --restart and Claude auto-arm uses
+# --successor-cycles, so those owners stay live across identity-matched
+# successors and surface a missing successor as a typed nonzero failure. The
+# default arm mode retains Grok's established one-cycle completion behavior. On
+# FAILED it exits non-zero so the failure is loud. A live cycle already present
+# means re-arm attaches - do not start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -319,11 +320,15 @@ print_watch_output() {
 }
 
 mode=arm
-case "${1:-}" in
-  ''|arm|--arm) mode=arm ;;
-  --restart) mode=restart ;;
-  *) echo "usage: $(basename "$0") [--restart]" >&2; exit 2 ;;
-esac
+SUCCESSOR_CYCLES=0
+for arg in "$@"; do
+  case "$arg" in
+    arm|--arm) mode=arm ;;
+    --restart) mode=restart; SUCCESSOR_CYCLES=1 ;;
+    --successor-cycles) SUCCESSOR_CYCLES=1 ;;
+    *) echo "usage: $(basename "$0") [--restart] [--successor-cycles]" >&2; exit 2 ;;
+  esac
+done
 
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
@@ -353,6 +358,11 @@ if [ "$mode" = arm ] && healthy_watcher; then
   cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
   cycle_begin "$HEALTHY_PID" attached
   report_attached
+  if [ "$SUCCESSOR_CYCLES" -eq 0 ]; then
+    while healthy_watcher; do sleep "$ATTACH_POLL"; done
+    cycle_log_append unknown unknown attached-cycle-ended none
+    exit 0
+  fi
   attach_and_wait "$HEALTHY_PID"
   exit $?
 fi
@@ -412,6 +422,14 @@ owned_child_finished() {
   fi
 
   if [ "$rc" -eq 0 ]; then
+    if [ "$SUCCESSOR_CYCLES" -eq 0 ]; then
+      cycle_log_append "$rc" "$signal" clean-cycle-ended none
+      print_watch_output "$child_out"
+      rm -f "$child_out" 2>/dev/null || true
+      child=
+      child_out=
+      return 0
+    fi
     if wait_for_healthy_successor; then
       cycle_log_append "$rc" "$signal" unexpected-clean-exit "attached:$HEALTHY_PID"
       print_watch_output "$child_out"

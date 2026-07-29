@@ -954,19 +954,38 @@ test_hook_claude_mode_reblocks_x_mode_without_tasks() {
 }
 
 test_hook_claude_mode_allows_when_autoarm_owner_alive() {
-  local dir pid out status
+  local dir pid identity out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-owner")
   : > "$dir/state/task1.meta"
   sleep 60 &
   pid=$!
   mkdir -p "$dir/state/.claude-autoarm.lock"
   printf '%s\n' "$pid" > "$dir/state/.claude-autoarm.lock/pid"
+  identity=$(watcher_identity "$dir" "$pid") || fail "could not identify auto-arm owner"
+  printf '%s\n' "$identity" > "$dir/state/.claude-autoarm.lock/pid-identity"
   out=$(run_hook_claude "$dir" false); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   expect_code 0 "$status" "--claude mode must allow when the auto-arm owner process is alive"
   [ -z "$out" ] || fail "--claude owner-claimed allow produced output: $out"
   pass "fm-turnend-guard --claude: allows the stop when the Stop auto-arm owner holds this home"
+}
+
+test_hook_claude_mode_rejects_reused_autoarm_pid() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-owner-reused")
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  printf '%s\n' "$pid" > "$dir/state/.claude-autoarm.lock/pid"
+  printf '%s\n' "stale process identity" > "$dir/state/.claude-autoarm.lock/pid-identity"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "--claude mode must reject a reused auto-arm owner pid"
+  assert_contains "$out" "TURN WOULD END BLIND" "reused auto-arm pid must not authorize a blind stop"
+  pass "fm-turnend-guard --claude: auto-arm recovery proof is process-identity bound"
 }
 
 test_hook_claude_mode_allows_on_fresh_rewake_epoch() {
@@ -1057,7 +1076,7 @@ test_hook_claude_mode_allow_resets_budget() {
 }
 
 test_hook_claude_mode_waits_for_late_claim() {
-  local dir helper out status holder
+  local dir helper out status holder identity
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-wait")
   : > "$dir/state/task1.meta"
   (
@@ -1065,6 +1084,8 @@ test_hook_claude_mode_waits_for_late_claim() {
     mkdir -p "$dir/state/.claude-autoarm.lock"
     sleep 60 &
     printf '%s\n' $! > "$dir/state/.claude-autoarm.lock/pid"
+    identity=$(watcher_identity "$dir" "$!") || exit 1
+    printf '%s\n' "$identity" > "$dir/state/.claude-autoarm.lock/pid-identity"
     printf '%s\n' $! > "$dir/holder.pid"
     wait
   ) &
@@ -1080,7 +1101,7 @@ test_hook_claude_mode_waits_for_late_claim() {
 }
 
 test_hook_claude_mode_secondmate_reblocks_like_primary() {
-  local dir pid out status
+  local dir pid identity out status
   dir=$(make_secondmate_dir "$TMP_ROOT/hook-claude-sm-reblock")
   : > "$dir/state/task1.meta"
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
@@ -1090,6 +1111,8 @@ test_hook_claude_mode_secondmate_reblocks_like_primary() {
   pid=$!
   mkdir -p "$dir/state/.claude-autoarm.lock"
   printf '%s\n' "$pid" > "$dir/state/.claude-autoarm.lock/pid"
+  identity=$(watcher_identity "$dir" "$pid") || fail "could not identify secondmate auto-arm owner"
+  printf '%s\n' "$identity" > "$dir/state/.claude-autoarm.lock/pid-identity"
   out=$(run_hook_claude "$dir" false); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
@@ -1152,6 +1175,7 @@ test_grok_hook_invokes_adapter
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
+test_hook_claude_mode_rejects_reused_autoarm_pid
 test_hook_claude_mode_allows_on_fresh_rewake_epoch
 test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_malformed_rewake_epoch_blocks
