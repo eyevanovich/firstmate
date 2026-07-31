@@ -1315,7 +1315,7 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
 
 test_config_reread_isolation_and_absent_and_send_failure() {
   local w head log out out2 err status status2 instr_a instr_b report retry_log retry_out retry_status retry_pointer
-  local first_instr first_copy second_instr second_pointer
+  local first_instr first_copy second_instr second_pointer last_harness
   w=$(new_world config-reread-absent)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" alpha "$head"
@@ -1412,9 +1412,9 @@ test_config_reread_isolation_and_absent_and_send_failure() {
   assert_contains "$(cat "$second_instr")" \
     $'-----BEGIN config/crew-harness-----\npi\n-----END config/crew-harness-----' \
     "latest snapshot did not retain current destination bytes"
-  assert_not_contains "$(cat "$second_instr")" \
-    $'-----BEGIN config/crew-harness-----\nclaude\n-----END config/crew-harness-----' \
-    "latest snapshot retained superseded destination bytes"
+  last_harness=$(awk '/^-----BEGIN config\/crew-harness-----$/ { getline; value=$0 } END { print value }' "$second_instr")
+  [ "$last_harness" = pi ] \
+    || fail "latest snapshot did not make current validated bytes authoritative"
   second_pointer="CONFIG_REREAD: $second_instr"
   assert_present "$(reread_pending_path "$w/alpha")" \
     "alpha second generation did not remain pending"
@@ -1847,24 +1847,26 @@ test_config_reread_quarantines_legacy_mutable_reports() {
   pass "B27 legacy mutable retry reports are quarantined"
 }
 
-test_config_reread_coalescing_omits_unvalidated_items() {
-  local w head retry_dir stage gitignore_tmp log out status instr
+test_config_reread_coalescing_preserves_prior_validated_items() {
+  local w head retry_dir stage old_report gitignore_tmp log out status instr
   w=$(new_world config-reread-unvalidated-item)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$head"
   mkdir -p "$w/sm/config"
   printf 'codex\n' > "$w/home/config/crew-harness"
   printf 'codex\n' > "$w/sm/config/crew-harness"
-  printf 'new-forge\n' > "$w/home/config/forge-hosts"
-  printf 'stale-forge\n' > "$w/sm/config/forge-hosts"
-  gitignore_tmp="$w/sm/.gitignore.tmp"
-  grep -v '^config/forge-hosts$' "$w/sm/.gitignore" > "$gitignore_tmp"
-  mv "$gitignore_tmp" "$w/sm/.gitignore"
+  printf 'validated-forge\n' > "$w/sm/config/forge-hosts"
   retry_dir="$w/home/state/.fm-inherited-config-reread-retry/sm"
   mkdir -p "$retry_dir"
   stage="$retry_dir/.fm-inherited-config-reread.20260721T000000.00000001"
-  printf 'older-generation\n' > "$stage"
-  chmod 0600 "$stage"
+  old_report="$w/prior-validated.report"
+  printf 'forge-hosts\tpushed\t\n' > "$old_report"
+  fm_config_write_reread_instruction "$w/sm" "$old_report" "$stage" \
+    || fail "could not create prior validated generation"
+  printf 'new-forge\n' > "$w/home/config/forge-hosts"
+  gitignore_tmp="$w/sm/.gitignore.tmp"
+  grep -v '^config/forge-hosts$' "$w/sm/.gitignore" > "$gitignore_tmp"
+  mv "$gitignore_tmp" "$w/sm/.gitignore"
   log="$w/config-reread-unvalidated-item.tmux.log"
 
   out=$(run_config_push "$w" "$log" 2>/dev/null); status=$?
@@ -1876,11 +1878,15 @@ test_config_reread_coalescing_omits_unvalidated_items() {
     || fail "validated items did not produce a coalesced snapshot"
   assert_contains "$(cat "$instr")" "config/crew-harness" \
     "coalesced snapshot omitted a validated item"
-  assert_not_contains "$(cat "$instr")" "config/forge-hosts" \
-    "coalesced snapshot converted an unvalidated item into authoritative state"
-  [ "$(cat "$w/sm/config/forge-hosts")" = stale-forge ] \
+  assert_contains "$(cat "$instr")" \
+    $'-----BEGIN config/forge-hosts-----\nvalidated-forge\n-----END config/forge-hosts-----' \
+    "coalesced snapshot dropped a previously validated item"
+  assert_not_contains "$(cat "$instr")" \
+    $'-----BEGIN config/forge-hosts-----\nnew-forge\n-----END config/forge-hosts-----' \
+    "coalesced snapshot used a currently unvalidated item"
+  [ "$(cat "$w/sm/config/forge-hosts")" = validated-forge ] \
     || fail "skipped destination was unexpectedly changed"
-  pass "B28 config reread coalescing omits unvalidated items"
+  pass "B28 config reread coalescing preserves prior validated items"
 }
 
 test_bootstrap_detect_only_does_not_create_state() {
@@ -2168,7 +2174,7 @@ test_config_reread_full_retry_queue_coalesces_before_new_push
 test_config_reread_mixed_pending_queue_coalesces_atomically
 test_config_reread_supersedes_older_pending_generations
 test_config_reread_quarantines_legacy_mutable_reports
-test_config_reread_coalescing_omits_unvalidated_items
+test_config_reread_coalescing_preserves_prior_validated_items
 test_config_reread_skips_when_unchanged_and_reads_after_push
 test_config_reread_bootstrap_path_and_spawn_flexibility
 test_bootstrap_respawns_before_config_reread

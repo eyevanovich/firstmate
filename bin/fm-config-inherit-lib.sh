@@ -452,7 +452,7 @@ FM_CONFIG_INHERIT_LOCK_REL="state/.fm-inherited-config.lock"
 
 # Framing lines for the config-reread instruction. Defaults/rules only - never
 # an enforcement claim, and never a parsed summary of file contents.
-FM_CONFIG_REREAD_FRAMING='These inherited config files changed. Re-read and apply their exact contents at every future intake. They are defaults/rules and do not remove your judgment to choose differently when warranted.'
+FM_CONFIG_REREAD_FRAMING='These inherited config files changed. Re-read and apply their exact contents at every future intake. Apply repeated paths in order, with the last occurrence authoritative. They are defaults/rules and do not remove your judgment to choose differently when warranted.'
 
 # fm_config_reread_is_allowlisted_item <item>
 # True only for the declared inheritable config allowlist (bare item name as
@@ -573,6 +573,35 @@ $pending_paths
 $stage_paths
 EOF
   printf '%s\n' "$latest"
+}
+
+fm_config_reread_prepend_backlog() {
+  local stage=$1 pending_paths=$2 stage_paths=$3 parent tmp ordered path
+  [ -f "$stage" ] && [ ! -L "$stage" ] || return 1
+  parent=${stage%/*}
+  tmp=$(umask 077; mktemp "$parent/.fm-config-reread-merge.XXXXXX" 2>/dev/null) || return 1
+  ordered=$(
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      printf '%s\t%s\n' "${path##*/}" "$path"
+    done <<EOF
+$pending_paths
+$stage_paths
+EOF
+  )
+  ordered=$(printf '%s\n' "$ordered" | LC_ALL=C sort -t $'\t' -k1,1 | cut -f2-)
+  printf '%s\n\n' "$FM_CONFIG_REREAD_FRAMING" > "$tmp" || { rm -f "$tmp"; return 1; }
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    [ -f "$path" ] && [ ! -L "$path" ] || { rm -f "$tmp"; return 1; }
+    cat "$path" >> "$tmp" || { rm -f "$tmp"; return 1; }
+    printf '\n' >> "$tmp" || { rm -f "$tmp"; return 1; }
+  done <<EOF
+$ordered
+EOF
+  cat "$stage" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 0600 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$stage" 2>/dev/null || { rm -f "$tmp"; return 1; }
 }
 
 fm_config_reread_has_staged() {
@@ -1116,6 +1145,10 @@ fm_config_send_reread_nudge() {
     fi
     [ "$snapshot_report" = "$report" ] || rm -f "$snapshot_report" 2>/dev/null || true
     if [ "$backlog" -eq 1 ]; then
+      if ! fm_config_reread_prepend_backlog "$current_stage_path" "$pending_paths" "$stage_paths"; then
+        printf 'CONFIG_REREAD: secondmate %s: send failed: could not merge immutable retry generations\n' "$id"
+        return 1
+      fi
       superseded="$pending_paths"$'\n'"$stage_paths"
       while IFS= read -r stage_path; do
         [ -n "$stage_path" ] || continue
