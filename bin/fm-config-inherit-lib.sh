@@ -590,7 +590,7 @@ fm_config_reread_save_retry_report() {
 # changed (or on write failure). Never inlines data/captain-shared.md, SHA
 # values, selected profiles, or any generated interpretation.
 fm_config_write_reread_instruction() {
-  local dest_home=$1 report=$2 instruction_path=$3 item rel dest parent tmp first=1
+  local dest_home=$1 report=$2 instruction_path=$3 parent tmp
   FM_CONFIG_REREAD_FAILED_TEMP=""
   [ -n "$dest_home" ] || return 1
   [ -n "$report" ] && [ -f "$report" ] || return 1
@@ -600,29 +600,7 @@ fm_config_write_reread_instruction() {
   mkdir -p "$parent" 2>/dev/null || return 1
   tmp=$(umask 077; mktemp "$instruction_path.tmp.XXXXXX" 2>/dev/null) || return 1
   chmod 0600 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
-  while IFS= read -r item; do
-    [ -n "$item" ] || continue
-    fm_config_reread_is_allowlisted_item "$item" || continue
-    rel="config/$item"
-    dest="$dest_home/config/$item"
-    if [ "$first" = 1 ]; then
-      printf '%s\n' "$FM_CONFIG_REREAD_FRAMING" >> "$tmp" || { rm -f "$tmp"; return 1; }
-      first=0
-    fi
-    {
-      printf '\n'
-      printf '%s\n' "$rel"
-      printf '%s\n' "-----BEGIN $rel-----"
-    } >> "$tmp" || { rm -f "$tmp"; return 1; }
-    if [ -f "$dest" ] && [ ! -L "$dest" ]; then
-      # Stream destination post-write bytes only - never re-read the primary.
-      cat "$dest" >> "$tmp" || { rm -f "$tmp"; return 1; }
-    else
-      printf '%s\n' "ABSENT" >> "$tmp" || { rm -f "$tmp"; return 1; }
-    fi
-    printf '%s\n' "-----END $rel-----" >> "$tmp" || { rm -f "$tmp"; return 1; }
-  done < <(fm_config_reread_changed_items "$report")
-  if [ "$first" = 1 ]; then
+  if ! fm_config_render_reread_instruction "$dest_home" "$report" "$tmp"; then
     rm -f "$tmp"
     return 1
   fi
@@ -631,6 +609,44 @@ fm_config_write_reread_instruction() {
     return 1
   fi
   return 0
+}
+
+fm_config_render_reread_instruction() {
+  local dest_home=$1 report=$2 output=$3 item rel dest first=1
+  : > "$output" || return 1
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    fm_config_reread_is_allowlisted_item "$item" || continue
+    rel="config/$item"
+    dest="$dest_home/config/$item"
+    if [ "$first" = 1 ]; then
+      printf '%s\n' "$FM_CONFIG_REREAD_FRAMING" >> "$output" || return 1
+      first=0
+    fi
+    {
+      printf '\n'
+      printf '%s\n' "$rel"
+      printf '%s\n' "-----BEGIN $rel-----"
+    } >> "$output" || return 1
+    if [ -f "$dest" ] && [ ! -L "$dest" ]; then
+      cat "$dest" >> "$output" || return 1
+    else
+      printf '%s\n' "ABSENT" >> "$output" || return 1
+    fi
+    printf '%s\n' "-----END $rel-----" >> "$output" || return 1
+  done < <(fm_config_reread_changed_items "$report")
+  [ "$first" = 0 ]
+}
+
+fm_config_capture_reread_instruction() {
+  local dest_home=$1 report=$2 stage_path=$3
+  [ -f "$stage_path" ] && [ ! -L "$stage_path" ] || return 1
+  chmod 0600 "$stage_path" 2>/dev/null || return 1
+  if fm_config_render_reread_instruction "$dest_home" "$report" "$stage_path"; then
+    return 0
+  fi
+  rm -f "$stage_path" 2>/dev/null || true
+  return 1
 }
 
 fm_config_reread_adopt_exact_temp() {
@@ -949,8 +965,8 @@ fm_config_reread_quarantine_pending() {
 fm_config_send_reread_nudge() {
   local id=$1 dest_home=$2 report=$3
   local dest_home_abs state source_home_abs changed_items pending_paths stage_paths delivery_paths
-  local stage_path instruction_path current_stage_path exact_tmp
-  local send_failures retry_report_paths retry_report_path retry_stage_path retry_record_path
+  local stage_path instruction_path current_stage_path
+  local send_failures retry_report_paths snapshot_report backlog superseded pending
   [ -n "$id" ] || return 1
   [ -n "$dest_home" ] || return 1
   [ -n "$report" ] && [ -f "$report" ] || return 1
@@ -972,58 +988,21 @@ fm_config_send_reread_nudge() {
     fi
   fi
   send_failures=0
-  while IFS= read -r retry_report_path; do
-    [ -n "$retry_report_path" ] || continue
-    retry_stage_path=${retry_report_path%.report}
-    exact_tmp=""
-    for stage_path in "$retry_stage_path".tmp.*; do
-      [ -f "$stage_path" ] && [ ! -L "$stage_path" ] || continue
-      exact_tmp="$stage_path"
-      break
-    done
-    if [ -n "$exact_tmp" ]; then
-      rm -f "$retry_report_path" 2>/dev/null || send_failures=1
-      continue
-    fi
-    if fm_config_write_reread_instruction "$dest_home_abs" "$retry_report_path" "$retry_stage_path"; then
-      rm -f "$retry_report_path" 2>/dev/null || send_failures=1
-      if [ -n "$stage_paths" ]; then
-        stage_paths+=$'\n'
-      fi
-      stage_paths+="$retry_stage_path"
-    else
-      exact_tmp=${FM_CONFIG_REREAD_FAILED_TEMP:-}
-      if [ -n "$exact_tmp" ] \
-        && fm_config_reread_adopt_exact_temp "$exact_tmp" "$retry_stage_path"; then
-        rm -f "$retry_report_path" 2>/dev/null || send_failures=1
-        if [ -n "$stage_paths" ]; then
-          stage_paths+=$'\n'
-        fi
-        stage_paths+="$retry_stage_path"
-      elif [ -n "$exact_tmp" ] && [ -f "$exact_tmp" ]; then
-        printf 'CONFIG_REREAD: secondmate %s: send failed: retained exact retry temporary %s\n' "$id" "$exact_tmp"
-        send_failures=1
-        break
-      else
-        printf 'CONFIG_REREAD: secondmate %s: send failed: could not rebuild retry instruction\n' "$id"
-        send_failures=1
-        break
-      fi
-    fi
-  done <<EOF
-$retry_report_paths
-EOF
-  if [ "$send_failures" -ne 0 ]; then
-    fm_config_reread_cleanup_sent "$dest_home_abs"
+  if [ -n "$retry_report_paths" ]; then
+    printf 'CONFIG_REREAD: secondmate %s: send failed: retry queue contains a mutable report\n' "$id"
     return 1
   fi
-  if [ -n "$changed_items" ]; then
+  backlog=0
+  if [ -n "$pending_paths" ] || [ -n "$stage_paths" ]; then
+    backlog=1
+  fi
+  if [ -n "$changed_items" ] || [ "$backlog" -eq 1 ]; then
     source_home_abs=$(cd "${FM_HOME:-}" 2>/dev/null && pwd -P || true)
     if [ -z "$source_home_abs" ]; then
       printf 'CONFIG_REREAD: secondmate %s: send failed: could not reserve retry instruction\n' "$id"
       return 1
     fi
-    if fm_config_reread_retry_queue_is_full "$source_home_abs" "$id"; then
+    if [ "$backlog" -eq 0 ] && fm_config_reread_retry_queue_is_full "$source_home_abs" "$id"; then
       printf 'CONFIG_REREAD: secondmate %s: send failed: retry instruction queue is full\n' "$id"
       return 1
     fi
@@ -1031,27 +1010,46 @@ EOF
       printf 'CONFIG_REREAD: secondmate %s: send failed: could not reserve retry instruction\n' "$id"
       return 1
     }
-    if ! fm_config_write_reread_instruction "$dest_home_abs" "$report" "$current_stage_path"; then
-      exact_tmp=${FM_CONFIG_REREAD_FAILED_TEMP:-}
-      if [ -n "$exact_tmp" ] \
-        && fm_config_reread_adopt_exact_temp "$exact_tmp" "$current_stage_path"; then
-        printf 'CONFIG_REREAD: secondmate %s: send failed: could not publish retry instruction; retained exact retry generation %s\n' "$id" "$current_stage_path"
-      elif [ -n "$exact_tmp" ] && [ -f "$exact_tmp" ]; then
+    snapshot_report=$report
+    if [ "$backlog" -eq 1 ]; then
+      snapshot_report=$(umask 077; mktemp "${current_stage_path}.snapshot.XXXXXX" 2>/dev/null) || {
         rm -f "$current_stage_path" 2>/dev/null || true
-        printf 'CONFIG_REREAD: secondmate %s: send failed: retained exact retry temporary %s\n' "$id" "$exact_tmp"
-      elif retry_record_path=$(fm_config_reread_save_retry_report "$report" "$current_stage_path"); then
-        rm -f "$current_stage_path" 2>/dev/null || true
-        printf 'CONFIG_REREAD: secondmate %s: send failed: could not write retry instruction; retained retry report %s\n' "$id" "$retry_record_path"
-      else
-        rm -f "$current_stage_path" 2>/dev/null || true
-        printf 'CONFIG_REREAD: secondmate %s: send failed: could not write retry instruction or retain retry report\n' "$id"
-      fi
+        printf 'CONFIG_REREAD: secondmate %s: send failed: could not reserve latest snapshot report\n' "$id"
+        return 1
+      }
+      for stage_path in $FM_INHERITABLE_CONFIG; do
+        printf '%s\tpushed\t\n' "$stage_path" >> "$snapshot_report" || {
+          rm -f "$snapshot_report" "$current_stage_path" 2>/dev/null || true
+          return 1
+        }
+      done
+    fi
+    if ! fm_config_capture_reread_instruction "$dest_home_abs" "$snapshot_report" "$current_stage_path"; then
+      [ "$snapshot_report" = "$report" ] || rm -f "$snapshot_report" 2>/dev/null || true
+      printf 'CONFIG_REREAD: secondmate %s: send failed: could not capture immutable retry generation\n' "$id"
       return 1
     fi
-    if [ -n "$stage_paths" ]; then
-      stage_paths+=$'\n'
+    [ "$snapshot_report" = "$report" ] || rm -f "$snapshot_report" 2>/dev/null || true
+    if [ "$backlog" -eq 1 ]; then
+      superseded="$pending_paths"$'\n'"$stage_paths"
+      while IFS= read -r stage_path; do
+        [ -n "$stage_path" ] || continue
+        case "$stage_path" in
+          "$state"/*)
+            pending="$stage_path.pending"
+            rm -f "$pending" "$stage_path" 2>/dev/null || true
+            ;;
+          *)
+            [ "$stage_path" = "$current_stage_path" ] || rm -f "$stage_path" 2>/dev/null || true
+            ;;
+        esac
+      done <<EOF
+$superseded
+EOF
+      pending_paths=""
+      stage_paths=""
     fi
-    stage_paths+="$current_stage_path"
+    stage_paths="$current_stage_path"
   fi
   delivery_paths="$pending_paths"
   while IFS= read -r stage_path; do

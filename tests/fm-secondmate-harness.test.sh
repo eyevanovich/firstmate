@@ -1396,8 +1396,7 @@ test_config_reread_isolation_and_absent_and_send_failure() {
   assert_present "$(reread_pending_path "$w/beta")" \
     "beta send failure did not record a retry marker"
 
-  # A later changed push publishes a distinct generation without overwriting
-  # the failed generation, then an unchanged push retries both pointers.
+  # A later changed push supersedes failed generations with one latest snapshot.
   printf 'pi\n' > "$w/home/config/crew-harness"
   err="$w/config-reread-send-fail-second.err"
   out2=$(PATH="$(make_fake_toolchain "$w"):$BASE_PATH" \
@@ -1409,13 +1408,18 @@ test_config_reread_isolation_and_absent_and_send_failure() {
     "second send failure must not claim reread delivery"
   second_instr=$(reread_instruction_path "$w/alpha") || fail "alpha second generation missing"
   [ "$first_instr" != "$second_instr" ] || fail "successive pushes reused the same generation path"
-  cmp -s "$first_copy" "$first_instr" || fail "later push overwrote the earlier generation bytes"
+  assert_absent "$first_instr" "later push left the older generation deliverable"
+  assert_contains "$(cat "$second_instr")" \
+    $'-----BEGIN config/crew-harness-----\npi\n-----END config/crew-harness-----' \
+    "latest snapshot did not retain current destination bytes"
+  assert_not_contains "$(cat "$second_instr")" \
+    $'-----BEGIN config/crew-harness-----\nclaude\n-----END config/crew-harness-----' \
+    "latest snapshot retained superseded destination bytes"
   second_pointer="CONFIG_REREAD: $second_instr"
   assert_present "$(reread_pending_path "$w/alpha")" \
     "alpha second generation did not remain pending"
 
-  # A normal later push retries the durable pointers even though propagation is
-  # unchanged, then clears every marker after delivery succeeds.
+  # A normal later push sends one latest snapshot and clears every marker.
   retry_log="$w/config-reread-send-retry.tmux.log"
   retry_out=$(run_config_push "$w" "$retry_log" 2>"$err"); retry_status=$?
   expect_code 0 "$retry_status" "send failure should be retryable"
@@ -1424,10 +1428,10 @@ test_config_reread_isolation_and_absent_and_send_failure() {
   retry_pointer="CONFIG_REREAD: $(reread_instruction_path "$w/beta")"
   assert_contains "$(cat "$retry_log")" "$retry_pointer" \
     "retry did not resend the durable pointer"
-  assert_contains "$(cat "$retry_log")" "CONFIG_REREAD: $first_instr" \
-    "retry did not resend the first pending generation"
-  assert_contains "$(cat "$retry_log")" "$second_pointer" \
-    "retry did not resend the second pending generation"
+  assert_not_contains "$(cat "$retry_log")" "CONFIG_REREAD: $first_instr" \
+    "retry resent the superseded first generation"
+  assert_not_contains "$(cat "$retry_log")" "$second_pointer" \
+    "retry resent the superseded second generation"
   assert_no_reread_pending "$w/alpha"
   assert_no_reread_pending "$w/beta"
   pass "B16 config reread isolation, ABSENT, generation safety, send failure, and retry"
@@ -1482,7 +1486,7 @@ SH
   pass "B20 config reread publication failures retain exact generations for retry"
 }
 
-test_config_reread_write_failure_retains_exact_retry_generation() {
+test_config_reread_captures_directly_into_reserved_generation() {
   local w head fakebin real_mv retry_dir out status stage_path log retry_out retry_status instr
   local old_instr new_instr
   w=$(new_world config-reread-write-retry)
@@ -1512,7 +1516,15 @@ SH
   chmod +x "$fakebin/mv"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
     FM_SEND_SETTLE=0 "$ROOT/bin/fm-config-push.sh" 2>&1); status=$?
-  expect_code 1 "$status" "instruction-write failure should remain diagnostic"
+  expect_code 0 "$status" "reserved generation capture should not require a stage rename"
+  instr=$(reread_instruction_path "$w/sm") \
+    || fail "direct generation capture did not publish an instruction"
+  assert_contains "$(cat "$instr")" \
+    $'-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----' \
+    "direct generation capture did not retain exact destination bytes"
+  assert_no_reread_retry_stages "$w/home" sm
+  pass "B21 config reread captures immutable bytes directly into reserved generations"
+  return
   assert_contains "$out" "retained exact retry generation" \
     "instruction-write failure did not retain exact retry bytes"
   stage_path=$(reread_retry_stage_path "$w/home" sm) \
@@ -1541,7 +1553,7 @@ SH
   pass "B21 config reread instruction-write failures retain exact retry generations"
 }
 
-test_config_reread_exact_temp_survives_adoption_failure() {
+test_config_reread_capture_avoids_mutable_report_fallback() {
   local w head fakebin real_mv real_cp retry_dir out status stage_path log retry_out retry_status
   local old_instr new_instr
   w=$(new_world config-reread-exact-temp-fallback)
@@ -1577,7 +1589,15 @@ SH
   chmod +x "$fakebin/cp"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
     FM_SEND_SETTLE=0 "$ROOT/bin/fm-config-push.sh" 2>&1); status=$?
-  expect_code 1 "$status" "exact temporary fallback failure should remain diagnostic"
+  expect_code 0 "$status" "immutable capture should not require temporary adoption"
+  instr=$(reread_instruction_path "$w/sm") \
+    || fail "immutable capture did not publish an instruction"
+  assert_contains "$(cat "$instr")" \
+    $'-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----' \
+    "immutable capture did not preserve the originating destination bytes"
+  assert_no_reread_retry_stages "$w/home" sm
+  pass "B21 config reread never falls back to mutable retry reports"
+  return
   assert_contains "$out" "retained exact retry temporary" \
     "exact temporary fallback failure did not retain the immutable bytes"
   stage_path=$(reread_retry_stage_path "$w/home" sm) \
@@ -1673,7 +1693,7 @@ SH
   pass "B21 config reread serializes concurrent propagation and delivery"
 }
 
-test_config_reread_full_retry_queue_drains_before_new_push() {
+test_config_reread_full_retry_queue_coalesces_before_new_push() {
   local w head retry_dir path n fakebin log out status pointer_count
   w=$(new_world config-reread-full-queue)
   head=$(git -C "$w/main" rev-parse HEAD)
@@ -1693,19 +1713,18 @@ test_config_reread_full_retry_queue_drains_before_new_push() {
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
     FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
     "$ROOT/bin/fm-config-push.sh" 2>&1); status=$?
-  expect_code 0 "$status" "a full retry queue should drain before a new push"
+  expect_code 0 "$status" "a full retry queue should coalesce before a new push"
   assert_contains "$out" "config-reread: sent" \
     "a new config generation was not delivered after retry draining"
   [ "$(cat "$w/sm/config/crew-harness")" = new ] \
     || fail "the new config generation did not propagate after retry draining"
   assert_no_reread_retry_stages "$w/home" sm
-  pointer_count=$(grep -c 'CONFIG_REREAD:' "$log" 2>/dev/null || true)
-  [ "$pointer_count" -ge 17 ] \
-    || fail "full retry queue did not deliver all pending generations before the new one"
-  pass "B22 full config reread retry queues drain before new publication"
+  assert_not_contains "$(cat "$log")" ".fm-inherited-config-reread.20260721T000000." \
+    "full retry queue delivered a superseded generation"
+  pass "B22 full config reread retry queues coalesce before new publication"
 }
 
-test_config_reread_cleanup_runs_after_mixed_delivery_failure() {
+test_config_reread_mixed_pending_queue_coalesces_atomically() {
   local w head fakebin state_real fail_path path n report out status count
   w=$(new_world config-reread-mixed-delivery)
   head=$(git -C "$w/main" rev-parse HEAD)
@@ -1738,26 +1757,17 @@ SH
   : > "$report"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
     FM_SEND_SETTLE=0 fm_config_send_reread_nudge sm "$w/sm" "$report" 2>&1); status=$?
-  expect_code 1 "$status" "mixed delivery failure should remain diagnostic"
-  assert_contains "$out" "CONFIG_REREAD: secondmate sm: send failed" \
-    "mixed delivery failure diagnostic missing"
-  count=0
-  for path in "$state_real"/.fm-inherited-config-reread.*; do
-    case "$path" in
-      *.pending) continue ;;
-    esac
-    [ -f "$path" ] && [ ! -L "$path" ] || continue
-    [ ! -e "$path.pending" ] || continue
-    count=$((count + 1))
-  done
-  [ "$count" = 16 ] || fail "mixed delivery failure skipped bounded sent-history cleanup (count=$count)"
-  assert_present "$fail_path.pending" "failed generation lost its retry marker"
-  pass "B23 mixed config reread delivery failures still bound sent history"
+  expect_code 0 "$status" "mixed pending generations should coalesce atomically"
+  assert_absent "$fail_path" "superseded failed generation remained deliverable"
+  assert_no_reread_pending "$w/sm"
+  pass "B23 mixed config reread generations coalesce atomically"
 }
 
-test_config_reread_stops_after_failed_generation() {
-  local w fakebin state_real old new report log out status
+test_config_reread_supersedes_older_pending_generations() {
+  local w head fakebin state_real old new report log out status pointer_count
   w=$(new_world config-reread-order)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head"
   mkdir -p "$w/sm/state"
   state_real=$(cd "$w/sm/state" && pwd -P)
   old="$state_real/.fm-inherited-config-reread.0000-fail"
@@ -1785,14 +1795,19 @@ SH
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
     fm_config_send_reread_nudge sm "$w/sm" "$report" 2>&1); status=$?
-  expect_code 1 "$status" "an older failed generation should remain diagnostic"
-  assert_contains "$out" "CONFIG_REREAD: secondmate sm: send failed" \
-    "older generation failure diagnostic missing"
+  expect_code 0 "$status" "pending generations should coalesce into the latest snapshot"
+  assert_not_contains "$(cat "$log" 2>/dev/null || true)" ".0000-fail" \
+    "older generation remained eligible for delivery"
   assert_not_contains "$(cat "$log" 2>/dev/null || true)" ".0001-new" \
-    "newer generation was delivered after an older failure"
-  assert_present "$old.pending" "older failed generation lost its retry marker"
-  assert_present "$new.pending" "newer generation was sent after an older failure"
-  pass "B26 config reread delivery stops after the oldest failed generation"
+    "intermediate generation remained eligible for delivery"
+  pointer_count=$(grep -o 'CONFIG_REREAD: [^ ]*' "$log" 2>/dev/null | sort -u | wc -l | tr -d ' ')
+  [ "$pointer_count" -eq 1 ] \
+    || fail "coalescing pending generations should deliver one latest pointer, got $pointer_count"
+  [ ! -e "$old" ] && [ ! -e "$old.pending" ] \
+    || fail "older pending generation was not superseded"
+  [ ! -e "$new" ] && [ ! -e "$new.pending" ] \
+    || fail "intermediate pending generation was not superseded"
+  pass "B26 config reread supersedes older pending generations"
 }
 
 test_bootstrap_detect_only_does_not_create_state() {
@@ -2073,12 +2088,12 @@ test_config_push_rereads_after_partial_propagation
 test_config_reread_per_home_changed_sets_and_exact_bytes
 test_config_reread_isolation_and_absent_and_send_failure
 test_config_reread_publication_failure_retries_exact_generation
-test_config_reread_write_failure_retains_exact_retry_generation
-test_config_reread_exact_temp_survives_adoption_failure
+test_config_reread_captures_directly_into_reserved_generation
+test_config_reread_capture_avoids_mutable_report_fallback
 test_config_reread_serializes_concurrent_pushes
-test_config_reread_full_retry_queue_drains_before_new_push
-test_config_reread_cleanup_runs_after_mixed_delivery_failure
-test_config_reread_stops_after_failed_generation
+test_config_reread_full_retry_queue_coalesces_before_new_push
+test_config_reread_mixed_pending_queue_coalesces_atomically
+test_config_reread_supersedes_older_pending_generations
 test_config_reread_skips_when_unchanged_and_reads_after_push
 test_config_reread_bootstrap_path_and_spawn_flexibility
 test_bootstrap_respawns_before_config_reread

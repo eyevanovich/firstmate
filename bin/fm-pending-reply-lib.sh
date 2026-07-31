@@ -599,10 +599,15 @@ fm_pending_reply_discard_undelivered() {  # <state-dir> <corr_id>
 # The parent's own pending-reply-missed escalation line must not self-resolve:
 # it names the request with pending-reply-id= rather than corr=.
 fm_pending_reply_line_resolves() {  # <line> <corr_id>
-  local line=$1 corr=$2
+  local line=$1 corr=$2 verb
   [ -n "$line" ] && [ -n "$corr" ] || return 1
   case "$line" in
     *pending-reply-missed*) return 1 ;;
+  esac
+  verb=${line%%[[:space:]:]*}
+  case "$verb" in
+    done|failed|blocked|needs-decision|waiting|paused|resolved) ;;
+    *) return 1 ;;
   esac
   fm_pending_reply_text_has_corr "$line" "$corr"
 }

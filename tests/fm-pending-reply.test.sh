@@ -126,6 +126,26 @@ test_normal_correlated_reply_resolves_once() {
   pass "normal correlated reply resolves once (idempotent)"
 }
 
+test_correlated_progress_does_not_resolve() {
+  local home state corr status
+  home=$(setup_parent progress-is-not-answer)
+  state="$home/state"
+  export FM_PENDING_REPLY_NOW=1100
+  corr=$(fm_pending_reply_create "$home" "$state" "hibit" "audit the ledger")
+  fm_pending_reply_mark_delivered "$state" "$corr"
+  status="$state/hibit.status"
+  printf 'working [corr=%s]: audit halfway complete\n' "$corr" > "$status"
+  if fm_pending_reply_try_resolve "$state" "$corr"; then
+    fail "correlated progress must not resolve a pending reply"
+  fi
+  [ "$(phase_of "$state" "$corr")" = awaiting_report ] \
+    || fail "correlated progress changed the pending phase"
+  printf 'done [corr=%s]: audit complete\n' "$corr" >> "$status"
+  fm_pending_reply_try_resolve "$state" "$corr" \
+    || fail "final correlated answer should resolve after progress"
+  pass "correlated progress waits for the final answer"
+}
+
 test_completed_turn_no_report_triggers_one_recovery() {
   local home state corr hook_log rec
   home=$(setup_parent one-recovery)
@@ -1041,6 +1061,7 @@ test_private_directory_symlink_is_refused() {
 # --- run --------------------------------------------------------------------
 
 test_normal_correlated_reply_resolves_once
+test_correlated_progress_does_not_resolve
 test_completed_turn_no_report_triggers_one_recovery
 test_recovery_attempt_is_never_reinjected
 test_recovery_reply_resolves_original
