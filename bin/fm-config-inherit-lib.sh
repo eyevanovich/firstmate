@@ -515,6 +515,66 @@ fm_config_reread_pending_reports() {
   done | LC_ALL=C sort
 }
 
+fm_config_reread_quarantine_reports() {
+  local source_home=$1 reports=$3 quarantine report rc=0
+  [ -n "$reports" ] || return 0
+  quarantine=$(fm_config_reread_quarantine_dir "$source_home" 2>/dev/null) || return 1
+  while IFS= read -r report; do
+    [ -n "$report" ] || continue
+    if ! mv -f "$report" "$quarantine/${report##*/}" 2>/dev/null; then
+      rc=1
+    fi
+  done <<EOF
+$reports
+EOF
+  [ "$rc" -eq 0 ] || return 1
+  printf '%s\n' "$quarantine"
+}
+
+fm_config_reread_validated_items() {
+  local report=$1 item status
+  [ -n "$report" ] && [ -f "$report" ] || return 0
+  for item in $FM_INHERITABLE_CONFIG; do
+    status=$(awk -F '\t' -v item="$item" '$1 == item { print $2; exit }' "$report" 2>/dev/null) || status=""
+    case "$status" in
+      pushed|unchanged) printf '%s\n' "$item" ;;
+    esac
+  done
+}
+
+fm_config_reread_keep_latest() {
+  local pending_paths=$1 stage_paths=$2 state=$3 path latest latest_name name pending
+  latest=""
+  latest_name=""
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    name=${path##*/}
+    if [ -z "$latest" ] || [[ "$name" > "$latest_name" ]]; then
+      latest=$path
+      latest_name=$name
+    fi
+  done <<EOF
+$pending_paths
+$stage_paths
+EOF
+  [ -n "$latest" ] || return 1
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    [ "$path" = "$latest" ] && continue
+    case "$path" in
+      "$state"/*)
+        pending="$path.pending"
+        rm -f "$pending" "$path" 2>/dev/null || return 1
+        ;;
+      *) rm -f "$path" 2>/dev/null || return 1 ;;
+    esac
+  done <<EOF
+$pending_paths
+$stage_paths
+EOF
+  printf '%s\n' "$latest"
+}
+
 fm_config_reread_has_staged() {
   local source_home=$1 id=$2 stage
   while IFS= read -r stage; do
@@ -967,6 +1027,7 @@ fm_config_send_reread_nudge() {
   local dest_home_abs state source_home_abs changed_items pending_paths stage_paths delivery_paths
   local stage_path instruction_path current_stage_path
   local send_failures retry_report_paths snapshot_report backlog superseded pending
+  local validated_items legacy_reports quarantine latest
   [ -n "$id" ] || return 1
   [ -n "$dest_home" ] || return 1
   [ -n "$report" ] && [ -f "$report" ] || return 1
@@ -988,13 +1049,37 @@ fm_config_send_reread_nudge() {
     fi
   fi
   send_failures=0
+  legacy_reports=0
   if [ -n "$retry_report_paths" ]; then
-    printf 'CONFIG_REREAD: secondmate %s: send failed: retry queue contains a mutable report\n' "$id"
-    return 1
+    quarantine=$(fm_config_reread_quarantine_reports "$source_home_abs" "$id" "$retry_report_paths") || {
+      printf 'CONFIG_REREAD: secondmate %s: send failed: could not quarantine mutable retry report\n' "$id"
+      return 1
+    }
+    printf 'CONFIG_REREAD: secondmate %s: quarantined mutable retry report at %s\n' "$id" "$quarantine"
+    legacy_reports=1
   fi
+  validated_items=$(fm_config_reread_validated_items "$report")
   backlog=0
-  if [ -n "$pending_paths" ] || [ -n "$stage_paths" ]; then
+  if [ -n "$pending_paths" ] || [ -n "$stage_paths" ] \
+    || { [ "$legacy_reports" -eq 1 ] && [ -n "$validated_items" ]; }; then
     backlog=1
+  fi
+  if [ "$backlog" -eq 1 ] && [ -z "$validated_items" ] && [ -z "$changed_items" ]; then
+    latest=$(fm_config_reread_keep_latest "$pending_paths" "$stage_paths" "$state") || {
+      printf 'CONFIG_REREAD: secondmate %s: send failed: could not retain latest immutable generation\n' "$id"
+      return 1
+    }
+    case "$latest" in
+      "$state"/*)
+        pending_paths="$latest"
+        stage_paths=""
+        ;;
+      *)
+        pending_paths=""
+        stage_paths="$latest"
+        ;;
+    esac
+    backlog=0
   fi
   if [ -n "$changed_items" ] || [ "$backlog" -eq 1 ]; then
     source_home_abs=$(cd "${FM_HOME:-}" 2>/dev/null && pwd -P || true)
@@ -1017,7 +1102,7 @@ fm_config_send_reread_nudge() {
         printf 'CONFIG_REREAD: secondmate %s: send failed: could not reserve latest snapshot report\n' "$id"
         return 1
       }
-      for stage_path in $FM_INHERITABLE_CONFIG; do
+      for stage_path in $validated_items; do
         printf '%s\tpushed\t\n' "$stage_path" >> "$snapshot_report" || {
           rm -f "$snapshot_report" "$current_stage_path" 2>/dev/null || true
           return 1

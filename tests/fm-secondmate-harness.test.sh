@@ -1719,8 +1719,10 @@ test_config_reread_full_retry_queue_coalesces_before_new_push() {
   [ "$(cat "$w/sm/config/crew-harness")" = new ] \
     || fail "the new config generation did not propagate after retry draining"
   assert_no_reread_retry_stages "$w/home" sm
-  assert_not_contains "$(cat "$log")" ".fm-inherited-config-reread.20260721T000000." \
-    "full retry queue delivered a superseded generation"
+  assert_contains "$(cat "$log")" ".fm-inherited-config-reread.20260721T000000.16" \
+    "full retry queue did not retain its latest immutable generation"
+  assert_not_contains "$(cat "$log")" ".fm-inherited-config-reread.20260721T000000.01" \
+    "full retry queue delivered an older immutable generation"
   pass "B22 full config reread retry queues coalesce before new publication"
 }
 
@@ -1754,7 +1756,9 @@ exec "$fakebin/tmux.real" "\$@"
 SH
   chmod +x "$fakebin/tmux"
   report="$w/empty-reread.report"
-  : > "$report"
+  for path in $FM_INHERITABLE_CONFIG; do
+    printf '%s\tunchanged\t\n' "$path" >> "$report"
+  done
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
     FM_SEND_SETTLE=0 fm_config_send_reread_nudge sm "$w/sm" "$report" 2>&1); status=$?
   expect_code 0 "$status" "mixed pending generations should coalesce atomically"
@@ -1790,7 +1794,9 @@ exec "$fakebin/tmux.real" "\$@"
 SH
   chmod +x "$fakebin/tmux"
   report="$w/empty-reread.report"
-  : > "$report"
+  for path in $FM_INHERITABLE_CONFIG; do
+    printf '%s\tunchanged\t\n' "$path" >> "$report"
+  done
   log="$w/config-reread-order.tmux.log"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
@@ -1808,6 +1814,73 @@ SH
   [ ! -e "$new" ] && [ ! -e "$new.pending" ] \
     || fail "intermediate pending generation was not superseded"
   pass "B26 config reread supersedes older pending generations"
+}
+
+test_config_reread_quarantines_legacy_mutable_reports() {
+  local w head retry_dir legacy log out status instr quarantined
+  w=$(new_world config-reread-legacy-report)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head"
+  mkdir -p "$w/sm/config"
+  printf 'codex\n' > "$w/home/config/crew-harness"
+  printf 'codex\n' > "$w/sm/config/crew-harness"
+  retry_dir="$w/home/state/.fm-inherited-config-reread-retry/sm"
+  mkdir -p "$retry_dir"
+  legacy="$retry_dir/.fm-inherited-config-reread.legacy.report"
+  printf 'crew-harness\tpushed\t\n' > "$legacy"
+  chmod 0600 "$legacy"
+  log="$w/config-reread-legacy-report.tmux.log"
+
+  out=$(run_config_push "$w" "$log" 2>/dev/null); status=$?
+
+  expect_code 0 "$status" "legacy mutable report should not block config rereads"
+  assert_contains "$out" "quarantined mutable retry report" \
+    "legacy mutable report quarantine was not surfaced"
+  assert_absent "$legacy" "legacy mutable report remained in the retry queue"
+  quarantined=$(find "$w/home/state/.fm-inherited-config-reread-quarantine" \
+    -type f -name '.fm-inherited-config-reread.legacy.report' -print -quit)
+  [ -n "$quarantined" ] || fail "legacy mutable report was not quarantined"
+  instr=$(reread_instruction_path "$w/sm") \
+    || fail "legacy report retirement did not capture a fresh immutable snapshot"
+  assert_contains "$(cat "$instr")" "config/crew-harness" \
+    "fresh snapshot omitted a validated config item"
+  pass "B27 legacy mutable retry reports are quarantined"
+}
+
+test_config_reread_coalescing_omits_unvalidated_items() {
+  local w head retry_dir stage gitignore_tmp log out status instr
+  w=$(new_world config-reread-unvalidated-item)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head"
+  mkdir -p "$w/sm/config"
+  printf 'codex\n' > "$w/home/config/crew-harness"
+  printf 'codex\n' > "$w/sm/config/crew-harness"
+  printf 'new-forge\n' > "$w/home/config/forge-hosts"
+  printf 'stale-forge\n' > "$w/sm/config/forge-hosts"
+  gitignore_tmp="$w/sm/.gitignore.tmp"
+  grep -v '^config/forge-hosts$' "$w/sm/.gitignore" > "$gitignore_tmp"
+  mv "$gitignore_tmp" "$w/sm/.gitignore"
+  retry_dir="$w/home/state/.fm-inherited-config-reread-retry/sm"
+  mkdir -p "$retry_dir"
+  stage="$retry_dir/.fm-inherited-config-reread.20260721T000000.00000001"
+  printf 'older-generation\n' > "$stage"
+  chmod 0600 "$stage"
+  log="$w/config-reread-unvalidated-item.tmux.log"
+
+  out=$(run_config_push "$w" "$log" 2>/dev/null); status=$?
+
+  expect_code 0 "$status" "skipped config item should remain non-authoritative"
+  assert_contains "$out" "forge-hosts: skipped" \
+    "fixture did not exercise an unvalidated config item"
+  instr=$(reread_instruction_path "$w/sm") \
+    || fail "validated items did not produce a coalesced snapshot"
+  assert_contains "$(cat "$instr")" "config/crew-harness" \
+    "coalesced snapshot omitted a validated item"
+  assert_not_contains "$(cat "$instr")" "config/forge-hosts" \
+    "coalesced snapshot converted an unvalidated item into authoritative state"
+  [ "$(cat "$w/sm/config/forge-hosts")" = stale-forge ] \
+    || fail "skipped destination was unexpectedly changed"
+  pass "B28 config reread coalescing omits unvalidated items"
 }
 
 test_bootstrap_detect_only_does_not_create_state() {
@@ -2094,6 +2167,8 @@ test_config_reread_serializes_concurrent_pushes
 test_config_reread_full_retry_queue_coalesces_before_new_push
 test_config_reread_mixed_pending_queue_coalesces_atomically
 test_config_reread_supersedes_older_pending_generations
+test_config_reread_quarantines_legacy_mutable_reports
+test_config_reread_coalescing_omits_unvalidated_items
 test_config_reread_skips_when_unchanged_and_reads_after_push
 test_config_reread_bootstrap_path_and_spawn_flexibility
 test_bootstrap_respawns_before_config_reread
