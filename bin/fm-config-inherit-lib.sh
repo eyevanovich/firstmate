@@ -700,7 +700,7 @@ fm_config_reread_save_retry_report() {
 # values, selected profiles, or any generated interpretation.
 fm_config_write_reread_instruction() {
   local dest_home=$1 report=$2 instruction_path=$3 parent tmp
-  FM_CONFIG_REREAD_FAILED_TEMP=""
+  export FM_CONFIG_REREAD_FAILED_TEMP=""
   [ -n "$dest_home" ] || return 1
   [ -n "$report" ] && [ -f "$report" ] || return 1
   [ -n "$instruction_path" ] || return 1
@@ -714,7 +714,7 @@ fm_config_write_reread_instruction() {
     return 1
   fi
   if ! mv -f "$tmp" "$instruction_path" 2>/dev/null; then
-    FM_CONFIG_REREAD_FAILED_TEMP="$tmp"
+    export FM_CONFIG_REREAD_FAILED_TEMP="$tmp"
     return 1
   fi
   return 0

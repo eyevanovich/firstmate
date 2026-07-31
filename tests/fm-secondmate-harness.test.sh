@@ -1487,8 +1487,7 @@ SH
 }
 
 test_config_reread_captures_directly_into_reserved_generation() {
-  local w head fakebin real_mv retry_dir out status stage_path log retry_out retry_status instr
-  local old_instr new_instr
+  local w head fakebin real_mv retry_dir status instr
   w=$(new_world config-reread-write-retry)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$head"
@@ -1514,8 +1513,8 @@ esac
 exec "$real_mv" "\$@"
 SH
   chmod +x "$fakebin/mv"
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
-    FM_SEND_SETTLE=0 "$ROOT/bin/fm-config-push.sh" 2>&1); status=$?
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
+    FM_SEND_SETTLE=0 "$ROOT/bin/fm-config-push.sh" >/dev/null 2>&1; status=$?
   expect_code 0 "$status" "reserved generation capture should not require a stage rename"
   instr=$(reread_instruction_path "$w/sm") \
     || fail "direct generation capture did not publish an instruction"
@@ -1524,38 +1523,10 @@ SH
     "direct generation capture did not retain exact destination bytes"
   assert_no_reread_retry_stages "$w/home" sm
   pass "B21 config reread captures immutable bytes directly into reserved generations"
-  return
-  assert_contains "$out" "retained exact retry generation" \
-    "instruction-write failure did not retain exact retry bytes"
-  stage_path=$(reread_retry_stage_path "$w/home" sm) \
-    || fail "instruction-write failure did not leave a durable exact generation"
-  assert_contains "$(cat "$stage_path")" \
-    $'-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----' \
-    "instruction-write failure did not retain the original exact bytes"
-  printf 'changed-before-retry\n' > "$w/home/config/crew-harness"
-  rm -f "$fakebin/mv"
-  log="$w/config-reread-write-retry.tmux.log"
-  retry_out=$(run_config_push "$w" "$log" 2>/dev/null); retry_status=$?
-  expect_code 0 "$retry_status" "a later changed push should retry an instruction-write failure"
-  assert_contains "$retry_out" "config-reread: sent" \
-    "later changed push did not deliver the retained exact generation"
-  old_instr=$(grep 'CONFIG_REREAD:' "$log" | head -n 1 | sed 's/.*CONFIG_REREAD: //')
-  new_instr=$(grep 'CONFIG_REREAD:' "$log" | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
-  [ -n "$old_instr" ] && [ -n "$new_instr" ] && [ "$old_instr" != "$new_instr" ] \
-    || fail "later changed push did not deliver both generations"
-  instr="$old_instr"
-  assert_contains "$(cat "$instr")" \
-    $'-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----' \
-    "exact retry delivery did not preserve the original destination bytes"
-  assert_contains "$(cat "$new_instr")" "changed-before-retry" \
-    "later changed push did not deliver its new destination bytes"
-  assert_no_reread_retry_stages "$w/home" sm
-  pass "B21 config reread instruction-write failures retain exact retry generations"
 }
 
 test_config_reread_capture_avoids_mutable_report_fallback() {
-  local w head fakebin real_mv real_cp retry_dir out status stage_path log retry_out retry_status
-  local old_instr new_instr
+  local w head fakebin real_mv real_cp retry_dir status instr
   w=$(new_world config-reread-exact-temp-fallback)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$head"
@@ -1587,8 +1558,8 @@ esac
 exec "$real_cp" "\$@"
 SH
   chmod +x "$fakebin/cp"
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
-    FM_SEND_SETTLE=0 "$ROOT/bin/fm-config-push.sh" 2>&1); status=$?
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
+    FM_SEND_SETTLE=0 "$ROOT/bin/fm-config-push.sh" >/dev/null 2>&1; status=$?
   expect_code 0 "$status" "immutable capture should not require temporary adoption"
   instr=$(reread_instruction_path "$w/sm") \
     || fail "immutable capture did not publish an instruction"
@@ -1597,36 +1568,6 @@ SH
     "immutable capture did not preserve the originating destination bytes"
   assert_no_reread_retry_stages "$w/home" sm
   pass "B21 config reread never falls back to mutable retry reports"
-  return
-  assert_contains "$out" "retained exact retry temporary" \
-    "exact temporary fallback failure did not retain the immutable bytes"
-  stage_path=$(reread_retry_stage_path "$w/home" sm) \
-    || fail "exact temporary fallback failure lost its retry artifact"
-  case "$stage_path" in
-    *.tmp.*) : ;;
-    *) fail "exact temporary fallback retained an unexpected artifact: $stage_path" ;;
-  esac
-  [ ! -e "$stage_path.report" ] \
-    || fail "exact temporary fallback created a lossy retry report"
-  assert_contains "$(cat "$stage_path")" \
-    $'-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----' \
-    "exact temporary fallback did not preserve the original bytes"
-  printf 'changed-before-retry\n' > "$w/home/config/crew-harness"
-  rm -f "$fakebin/mv" "$fakebin/cp"
-  log="$w/config-reread-exact-temp-fallback.tmux.log"
-  retry_out=$(run_config_push "$w" "$log" 2>/dev/null); retry_status=$?
-  expect_code 0 "$retry_status" "later push should deliver retained exact temporary bytes"
-  old_instr=$(grep 'CONFIG_REREAD:' "$log" | head -n 1 | sed 's/.*CONFIG_REREAD: //')
-  new_instr=$(grep 'CONFIG_REREAD:' "$log" | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
-  [ -n "$old_instr" ] && [ -n "$new_instr" ] && [ "$old_instr" != "$new_instr" ] \
-    || fail "later push did not deliver both exact generations"
-  assert_contains "$(cat "$old_instr")" \
-    $'-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----' \
-    "later push rebuilt the retained temporary from newer bytes"
-  assert_contains "$(cat "$new_instr")" "changed-before-retry" \
-    "later push did not deliver the new destination bytes"
-  assert_no_reread_retry_stages "$w/home" sm
-  pass "B21 config reread preserves exact bytes when temporary adoption also fails"
 }
 
 test_config_reread_serializes_concurrent_pushes() {
