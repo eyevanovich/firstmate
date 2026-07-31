@@ -1858,6 +1858,7 @@ test_config_reread_coalescing_preserves_prior_validated_items() {
   printf 'validated-forge\n' > "$w/sm/config/forge-hosts"
   retry_dir="$w/home/state/.fm-inherited-config-reread-retry/sm"
   mkdir -p "$retry_dir"
+  retry_dir=$(cd "$retry_dir" && pwd -P)
   stage="$retry_dir/.fm-inherited-config-reread.20260721T000000.00000001"
   old_report="$w/prior-validated.report"
   printf 'forge-hosts\tpushed\t\n' > "$old_report"
@@ -1887,6 +1888,75 @@ test_config_reread_coalescing_preserves_prior_validated_items() {
   [ "$(cat "$w/sm/config/forge-hosts")" = validated-forge ] \
     || fail "skipped destination was unexpectedly changed"
   pass "B28 config reread coalescing preserves prior validated items"
+}
+
+test_config_reread_cleanup_failure_keeps_old_generation_ineligible() {
+  local w head retry_dir stage old_report fakebin real_rm log out status first_instr
+  local gitignore_tmp second_log second_out second_status second_instr second_report
+  w=$(new_world config-reread-cleanup-failure)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head"
+  mkdir -p "$w/sm/config"
+  printf 'old\n' > "$w/sm/config/crew-harness"
+  retry_dir="$w/home/state/.fm-inherited-config-reread-retry/sm"
+  mkdir -p "$retry_dir"
+  retry_dir=$(cd "$retry_dir" && pwd -P)
+  stage="$retry_dir/.fm-inherited-config-reread.20260721T000000.00000001"
+  old_report="$w/cleanup-prior.report"
+  printf 'crew-harness\tpushed\t\n' > "$old_report"
+  fm_config_write_reread_instruction "$w/sm" "$old_report" "$stage" \
+    || fail "could not create cleanup-failure prior generation"
+  printf 'one\n' > "$w/home/config/crew-harness"
+  printf 'one\n' > "$w/sm/config/crew-harness"
+  fakebin=$(make_fake_toolchain "$w")
+  real_rm=$(command -v rm)
+  cat > "$fakebin/rm" <<SH
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  [ "\$arg" = "$stage" ] && exit 1
+done
+exec "$real_rm" "\$@"
+SH
+  chmod +x "$fakebin/rm"
+  log="$w/config-reread-cleanup-failure.tmux.log"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
+    FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+    "$ROOT/bin/fm-config-push.sh" 2>&1); status=$?
+
+  expect_code 0 "$status" "cleanup failure should not invalidate merged delivery"
+  assert_present "$stage" "cleanup failure fixture did not retain the old generation"
+  assert_present "$stage.superseded" "old generation was not logically superseded"
+  first_instr=$(reread_instruction_path "$w/sm") \
+    || fail "cleanup failure did not publish the merged generation"
+  [ "$(awk '/^-----BEGIN config\/crew-harness-----$/ { getline; value=$0 } END { print value }' "$first_instr")" = one ] \
+    || fail "merged generation did not keep the newest validated crew harness"
+
+  printf 'new-forge\n' > "$w/home/config/forge-hosts"
+  printf 'new-forge\n' > "$w/sm/config/forge-hosts"
+  gitignore_tmp="$w/sm/.gitignore.tmp"
+  grep -v '^config/crew-harness$' "$w/sm/.gitignore" > "$gitignore_tmp"
+  mv "$gitignore_tmp" "$w/sm/.gitignore"
+  second_report="$w/cleanup-second.report"
+  {
+    printf 'crew-harness\tskipped\tunvalidated\n'
+    printf 'forge-hosts\tpushed\t\n'
+  } > "$second_report"
+  second_log="$w/config-reread-after-cleanup-failure.tmux.log"
+  second_out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
+    FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$second_log" \
+    fm_config_send_reread_nudge sm "$w/sm" "$second_report" 2>&1); second_status=$?
+
+  expect_code 0 "$second_status" "later partial push should ignore superseded artifacts"
+  second_instr=$(grep 'CONFIG_REREAD:' "$second_log" | tail -n 1 | sed 's/.*CONFIG_REREAD: //')
+  [ -n "$second_instr" ] && [ -f "$second_instr" ] \
+    || fail "later partial push did not publish its validated generation"
+  assert_contains "$(cat "$second_instr")" \
+    $'-----BEGIN config/forge-hosts-----\nnew-forge\n-----END config/forge-hosts-----' \
+    "later partial push omitted its newly validated item"
+  assert_not_contains "$(cat "$second_instr")" "config/crew-harness" \
+    "later partial push reintroduced the superseded crew harness"
+  pass "B29 cleanup failure cannot reactivate superseded config generations"
 }
 
 test_bootstrap_detect_only_does_not_create_state() {
@@ -2175,6 +2245,7 @@ test_config_reread_mixed_pending_queue_coalesces_atomically
 test_config_reread_supersedes_older_pending_generations
 test_config_reread_quarantines_legacy_mutable_reports
 test_config_reread_coalescing_preserves_prior_validated_items
+test_config_reread_cleanup_failure_keeps_old_generation_ineligible
 test_config_reread_skips_when_unchanged_and_reads_after_push
 test_config_reread_bootstrap_path_and_spawn_flexibility
 test_bootstrap_respawns_before_config_reread

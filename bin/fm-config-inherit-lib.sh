@@ -498,9 +498,10 @@ fm_config_reread_pending_stages() {
   retry_dir=$(fm_config_reread_retry_dir "$source_home" "$id") || return 1
   for stage in "$retry_dir"/.fm-inherited-config-reread.*; do
     case "$stage" in
-      *.report) continue ;;
+      *.report|*.superseded) continue ;;
     esac
     [ -f "$stage" ] && [ ! -L "$stage" ] || continue
+    [ -e "$stage.superseded" ] || [ -L "$stage.superseded" ] && continue
     [ -s "$stage" ] || continue
     printf '%s\n' "$stage"
   done | LC_ALL=C sort
@@ -602,6 +603,25 @@ EOF
   cat "$stage" >> "$tmp" || { rm -f "$tmp"; return 1; }
   chmod 0600 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
   mv -f "$tmp" "$stage" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+fm_config_reread_mark_superseded() {
+  local path=$1 successor=$2 marker parent tmp current
+  marker="$path.superseded"
+  if [ -f "$marker" ] && [ ! -L "$marker" ]; then
+    current=$(cat "$marker" 2>/dev/null || true)
+    [ "$current" = "$successor" ]
+    return
+  fi
+  [ ! -e "$marker" ] && [ ! -L "$marker" ] || return 1
+  parent=${marker%/*}
+  tmp=$(umask 077; mktemp "$parent/.fm-config-reread-superseded.XXXXXX" 2>/dev/null) || return 1
+  if ! printf '%s\n' "$successor" > "$tmp" \
+    || ! chmod 0600 "$tmp" 2>/dev/null \
+    || ! mv -f "$tmp" "$marker" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
 }
 
 fm_config_reread_has_staged() {
@@ -760,6 +780,7 @@ fm_config_reread_pending_instructions() {
   for pending in "$state"/.fm-inherited-config-reread.*.pending; do
     [ -f "$pending" ] && [ ! -L "$pending" ] || continue
     instruction=${pending%.pending}
+    [ -e "$instruction.superseded" ] || [ -L "$instruction.superseded" ] && continue
     printf '%s\n' "$instruction"
   done | LC_ALL=C sort
 }
@@ -769,6 +790,7 @@ fm_config_reread_has_pending() {
   state="$dest_home/${FM_CONFIG_REREAD_INSTRUCTION_PREFIX_REL%/*}"
   for pending in "$state"/.fm-inherited-config-reread.*.pending; do
     [ -f "$pending" ] && [ ! -L "$pending" ] || continue
+    [ -e "${pending%.pending}.superseded" ] || [ -L "${pending%.pending}.superseded" ] && continue
     return 0
   done
   return 1
@@ -781,7 +803,7 @@ fm_config_reread_cleanup_sent() {
   paths=""
   for path in "$state"/.fm-inherited-config-reread.*; do
     case "$path" in
-      *.pending) continue ;;
+      *.pending|*.superseded) continue ;;
     esac
     [ -f "$path" ] && [ ! -L "$path" ] || continue
     [ -e "$path.pending" ] || [ -L "$path.pending" ] && continue
@@ -865,6 +887,10 @@ fm_config_reread_send_failure() {
 fm_config_reread_send_pointer() {
   local id=$1 instruction_path=$2 pending_path selector out rc send_bin message pending_pointer
   pending_path="$instruction_path.pending"
+  if [ -e "$instruction_path.superseded" ] || [ -L "$instruction_path.superseded" ]; then
+    printf 'CONFIG_REREAD: secondmate %s: send failed: pending instruction was superseded\n' "$id"
+    return 1
+  fi
   if [ ! -f "$instruction_path" ] || [ -L "$instruction_path" ]; then
     printf 'CONFIG_REREAD: secondmate %s: send failed: pending instruction file is missing\n' "$id"
     return 1
@@ -1055,7 +1081,7 @@ fm_config_send_reread_nudge() {
   local id=$1 dest_home=$2 report=$3
   local dest_home_abs state source_home_abs changed_items pending_paths stage_paths delivery_paths
   local stage_path instruction_path current_stage_path
-  local send_failures retry_report_paths snapshot_report backlog superseded pending
+  local send_failures retry_report_paths snapshot_report backlog superseded pending superseded_marker
   local validated_items legacy_reports quarantine latest
   [ -n "$id" ] || return 1
   [ -n "$dest_home" ] || return 1
@@ -1152,13 +1178,32 @@ fm_config_send_reread_nudge() {
       superseded="$pending_paths"$'\n'"$stage_paths"
       while IFS= read -r stage_path; do
         [ -n "$stage_path" ] || continue
+        fm_config_reread_mark_superseded "$stage_path" "$current_stage_path" || {
+          printf 'CONFIG_REREAD: secondmate %s: send failed: could not mark prior generation superseded\n' "$id"
+          return 1
+        }
+      done <<EOF
+$superseded
+EOF
+      while IFS= read -r stage_path; do
+        [ -n "$stage_path" ] || continue
+        superseded_marker="$stage_path.superseded"
         case "$stage_path" in
           "$state"/*)
             pending="$stage_path.pending"
             rm -f "$pending" "$stage_path" 2>/dev/null || true
+            if [ ! -e "$pending" ] && [ ! -L "$pending" ] \
+              && [ ! -e "$stage_path" ] && [ ! -L "$stage_path" ]; then
+              rm -f "$superseded_marker" 2>/dev/null || true
+            fi
             ;;
           *)
-            [ "$stage_path" = "$current_stage_path" ] || rm -f "$stage_path" 2>/dev/null || true
+            if [ "$stage_path" != "$current_stage_path" ]; then
+              rm -f "$stage_path" 2>/dev/null || true
+              if [ ! -e "$stage_path" ] && [ ! -L "$stage_path" ]; then
+                rm -f "$superseded_marker" 2>/dev/null || true
+              fi
+            fi
             ;;
         esac
       done <<EOF
