@@ -118,13 +118,10 @@ Stalled escalation delivery writes `state/.subsuper-inject-wedged` and attempts 
 On an unmarked return, `bin/fm-afk-return.sh` owns ordered shutdown, durable catch-up evidence, and the fail-closed gate that keeps ordinary work behind every live firstmate-actionable blocker.
 `fm-send.sh` records every remote text steer and ordinary local text steer in a durable steering inbox before it attempts a best-effort constant doorbell line (`bin/fm-task-inbox-lib.sh`).
 The durable record is the delivery, while the terminal line only notifies a running worker to inspect it.
-This deliberate split replaces payload typing, so a completed Pi worker can leave a later record unacknowledged and a doorbell skipped for visibly pending input cannot lose the instruction.
 The watcher re-rings an unacknowledged local record and escalates a worker that remains stuck.
 Its local-only typed plane - harness-native invocations and explicit backend targets - selects a pre-Enter popup-settle for slash commands and for codex `$...` skill invocations using metadata-routed target `harness=` values, then adds its own `FM_SEND_SETTLE` pause after successful typed sends so immediate peeks catch the receiving turn starting; the sub-supervisor uses only the shared submit core and does not pay that post-submit pause.
 
 Text for a worker to read and commands that drive a worker's process are separate planes.
-A steering record proves neither that the agent is still running nor that it processed the instruction.
-Do not type lifecycle commands such as `/quit` into a task terminal, because a stopped Pi session exposes a shell where that line is an unknown shell command.
 `fm-send.sh` is the data plane and always routing-marks a `kind=secondmate` target, which is right for a message and wrong for a lifecycle command, because a marked exit command arrives as chat the agent reasons about instead of executing.
 `bin/fm-control.sh` is the control plane: use its allowlisted `interrupt`, `exit`, or transactional `relaunch` for an exact task id, with per-harness mechanics owned by `bin/fm-control-lib.sh`, a verified postcondition per verb, and no arbitrary-text or raw-key entry point.
 [`docs/agent-control.md`](agent-control.md) owns the verb contract, the capability matrix, the relaunch transaction, and the fail-closed boundaries.
