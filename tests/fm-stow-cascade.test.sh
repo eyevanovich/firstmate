@@ -58,6 +58,7 @@ set -u
 case "$*" in
   *list-windows*) printf '%s\n' "${FM_FAKE_TMUX_WINDOW:-}" ;;
   *list-panes*) printf '%s\n' "${FM_FAKE_TMUX_PANE:-}" ;;
+  *display-message*'#{pane_tty}'*) printf '%s\n' /dev/fm-test ;;
   *display-message*'#{pane_current_command}'*) printf '%s\n' "${FM_FAKE_TMUX_COMMAND:-claude}" ;;
   *display-message*'#{pane_pid}'*) printf '%s\n' "$$" ;;
   *display-message*'#{pane_id}'*) printf '%s\n' '%1' ;;
@@ -67,6 +68,15 @@ esac
 exit 0
 SH
 chmod +x "$FAKEBIN/tmux"
+cat > "$FAKEBIN/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  -t) printf '1 1 1 %s\n' "${FM_FAKE_TMUX_COMMAND:-claude}" ;;
+  -p) printf '%s\n' "${FM_FAKE_TMUX_COMMAND:-claude}" ;;
+esac
+SH
+chmod +x "$FAKEBIN/ps"
 
 # new_home <name> [budget] -> path to a seeded local secondmate home.
 new_home() {

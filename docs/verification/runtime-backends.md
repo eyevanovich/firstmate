@@ -33,7 +33,7 @@ Pi and pi-signed 0.82.0 were reverified on 2026-07-27 through real isolated `fm-
 ### Agent liveness name sources
 
 The earlier record that every harness is observed under its own `#{pane_current_command}` no longer holds and has been replaced by the per-harness evidence below.
-In this macOS run that reading reflected a rewritable process title rather than stable executable identity, so it is now one of two independent name sources rather than the sole basis of a verdict.
+In this macOS run that reading reflected a rewritable process title rather than stable executable identity, so current lifecycle classification does not use it as liveness evidence.
 
 The seven primary-capable adapters were relaunched on 2026-08-03 with tmux 3.6a on macOS 26.5.2 arm64, each on a private socket in an isolated lab.
 
@@ -76,9 +76,9 @@ fm_backend_agent_state tmux museliv:zsh
 alive
 ```
 
-`#{pane_current_command}` and foreground `ps -o comm=` read different name fields, but which one preserves executable identity is platform-dependent.
-On macOS the pane command reflected the rewritable title while the full install path could survive in `ps -o comm=`; in the Linux portable regression those roles reversed for the version-named native executable, with the identifying path retained in argv[0].
-The classifier therefore accepts a harness basename first, then an exact harness path component in the full executable path, then the same component in argv[0], without depending on which field carries it on a given platform.
+Foreground `ps -o comm=` and argv[0] read different name fields, and which one preserves executable identity is platform-dependent.
+On macOS the full install path could survive in `ps -o comm=`; in the Linux portable regression the identifying path was retained in argv[0].
+The classifier therefore accepts a harness basename first, then an exact harness path component in the foreground executable path, then the same component in foreground argv[0], without depending on which field carries it on a given platform.
 
 The portable regression is CI-enforced, while the real-harness drift guard is opt-in under the policy in `.agents/skills/firstmate-coding-guidelines/SKILL.md`.
 Run the live guard after any harness upgrade and before trusting or refreshing the table above:
@@ -795,7 +795,7 @@ Resolution prints the STABLE launcher rather than the canonical target, because 
 
 ### Process identity
 
-`#{pane_current_command}` and `ps -o comm=` disagree for cursor, which is why identity reads both:
+`#{pane_current_command}` and `ps -o comm=` disagree for cursor, demonstrating why the pane title is not lifecycle authority:
 
 | Source | Observed value |
 | --- | --- |

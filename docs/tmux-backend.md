@@ -51,12 +51,12 @@ The deeper tmux agent-liveness probe first verifies exact window membership, the
 It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 Only `dead` and `missing` authorize recovery because a false dead result could launch a duplicate agent.
 
-For positive attribution, the probe combines two independent name sources rather than making either one load-bearing.
-`#{pane_current_command}` and the pane tty foreground process group's kernel `comm` values expose different name fields, and which one retains executable identity is platform-dependent.
-The foreground probe also reads argv[0] so an exact harness install-path component can carry the verdict when the other fields expose a rewritten process name.
-Either source naming a verified harness is enough for `alive`, because a false `dead` is the one verdict that can start a duplicate agent on a live worktree, while a readable foreground process group settles the negative verdicts.
+The semantic source is the pane tty's foreground process group, read through both kernel `comm` and argv[0] so an exact harness install-path component can carry the verdict when one field exposes a rewritten process name.
+A verified harness there is `alive`, a group containing only recognized shells is `dead`, and any other readable group is `ambiguous`.
+An unavailable or empty foreground read is `unreadable`.
+`#{pane_current_command}` is not liveness evidence because its title can remain Pi after the completed agent has returned the terminal to its shell.
 
-Scoping the second source to the foreground process group rather than to the pane's descendants is deliberate: a harness-named process left running in the background of an otherwise idle pane must not read as an agent.
+Scoping the process read to the foreground group rather than to the pane's descendants is deliberate: a harness-named process left running in the background of an otherwise idle pane must not read as an agent.
 The same scoping covers multi-process launchers without a special case, so the Pi Launcher path is attributed through its `pi-signed` wrapper and `pi` engine even though its title is the exact foreground command `pi-launcher`.
 Direct executable identities `pi`, `pi-signed`, and `Pi` remain accepted exactly, and similar or prefixed process names are not accepted through those exact Pi-family entries.
 Muse is likewise anchored to the exact `muse` launcher identity or the installed `muse-bin-<version>` prefix, so unrelated names such as `musescore` and `amuse` remain ambiguous.

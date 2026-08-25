@@ -1344,7 +1344,8 @@ _fm_composer_classify_pi_rows() {  # <screen> <styled>
     raw=$(_fm_composer_screen_row "$row" "$screen")
     content=$(_fm_composer_row_content "$raw" "$styled")
     fm_composer_normalize_trim_var content
-    if [ -n "$content" ]; then
+    # Herdr renders Pi's empty separated composer as a lone prompt glyph.
+    if [ -n "$content" ] && [ "$content" != '>' ]; then
       printf 'pending'
       return 0
     fi

@@ -318,6 +318,13 @@ test_matrix_pi_separated_needs_identity() {
   assert_screen "absent identity cannot prove blank pi pair" unknown "$CAPS_TMUX" "$screen" 2 probe-absent
   typed=$'────────────────────────\nfix the flaky test\n────────────────────────'
   assert_screen "pi typed" pending "$CAPS_STYLED" "$typed" '' "$pi_idle"
+  # Herdr prefixes an otherwise blank Pi separated composer with `>`.
+  # It is renderer furniture, not a user draft.
+  typed=$'────────────────────────\n>\n────────────────────────'
+  assert_screen "pi Herdr prompt idle" empty "$CAPS_STYLED" "$typed" '' "$pi_idle"
+  assert_screen "pi Herdr prompt working" unknown "$CAPS_STYLED" "$typed" '' "$pi_working"
+  typed=$'────────────────────────\n> actual draft\n────────────────────────'
+  assert_screen "pi Herdr draft" pending "$CAPS_STYLED" "$typed" '' "$pi_idle"
   typed=$'────────────────────────\n❯\n────────────────────────'
   assert_screen "pi lone-glyph draft with identity" pending "$CAPS_STYLED" "$typed" '' "$pi_idle"
   assert_screen "pi lone-glyph draft on tmux" pending "$CAPS_TMUX" "$typed" 1 "$pi_idle"
