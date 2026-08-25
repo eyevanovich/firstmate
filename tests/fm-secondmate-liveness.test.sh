@@ -42,9 +42,8 @@ TMP_ROOT=$(fm_test_tmproot fm-secondmate-liveness)
 
 # --- unit level: fm_backend_tmux_agent_state --------------------------------
 
-# make_probe_tmux <dir> <pane_current_command>: a fake tmux whose
-# #{pane_current_command} display-message query answers with the fixed value;
-# every other subcommand is a silent no-op success.
+# make_probe_tmux <dir> <foreground-command>: a fake tmux and process table
+# whose pane tty foreground group contains the fixed value.
 make_probe_tmux() {
   local dir=$1 comm=$2 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -53,13 +52,22 @@ make_probe_tmux() {
 set -u
 case "\${1:-}" in
   display-message)
-    for a in "\$@"; do case "\$a" in *pane_current_command*) printf '%s\n' '$comm'; exit 0 ;; esac; done
+    for a in "\$@"; do case "\$a" in *pane_tty*) printf '%s\n' /dev/fm-test; exit 0 ;; esac; done
     exit 0 ;;
   list-windows) printf '%s\n' win; exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  -t) printf '1 1 1 %s\n' '$comm' ;;
+  -p) printf '%s\n' '$comm' ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
   printf '%s\n' "$fakebin"
 }
 
@@ -261,9 +269,9 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-# make_liveness_tmux <dir>: a controllable tmux stub. FM_TEST_PANE_CMD may be
-# a foreground command, `missing` (readable inventory omits the window), or
-# `unreadable` (both pane and inventory reads fail).
+# make_liveness_tmux <dir>: a controllable tmux and process-table stub.
+# FM_TEST_PANE_CMD may be a foreground command, `missing` (readable inventory
+# omits the window), or `unreadable` (both pane and inventory reads fail).
 make_liveness_tmux() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -275,11 +283,10 @@ case "${1:-}" in
   display-message)
     for a in "$@"; do
       case "$a" in
-        *pane_current_command*)
+        *pane_tty*)
           case "$mode" in
-            missing) printf '%s\n' node; exit 0 ;;
             unreadable) exit 1 ;;
-            *) printf '%s\n' "$mode"; exit 0 ;;
+            *) printf '%s\n' /dev/fm-test; exit 0 ;;
           esac
           ;;
       esac
@@ -305,6 +312,16 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+mode=${FM_TEST_PANE_CMD:-zsh}
+case "${1:-}" in
+  -t) printf '1 1 1 %s\n' "$mode" ;;
+  -p) printf '%s\n' "$mode" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
   printf '%s\n' "$fakebin"
 }
 

@@ -34,6 +34,12 @@ case "${1:-}" in
     ;;
   display-message)
     case "$*" in
+      *pane_tty*)
+        case "$target" in
+          *dead-secondmate*) printf '/dev/fm-dead\n' ;;
+          *) printf '/dev/fm-live\n' ;;
+        esac
+        ;;
       *pane_current_command*)
         case "$target" in
           *dead-secondmate*) printf 'zsh\n' ;;
@@ -52,7 +58,25 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/tmux"
+  cat > "$fb/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  -t)
+    case "${2:-}" in
+      fm-dead) printf '2 2 2 zsh\n' ;;
+      *) printf '1 1 1 codex\n' ;;
+    esac
+    ;;
+  -p)
+    case "${2:-}" in
+      2) printf 'zsh\n' ;;
+      *) printf 'codex\n' ;;
+    esac
+    ;;
+esac
+SH
+  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/ps"
   printf '%s\n' "$fb"
 }
 

@@ -99,6 +99,7 @@ case "${1:-}" in
     for a in "$@"; do
       case "$a" in
         *cursor_y*) printf '1\n'; exit 0 ;;
+        *pane_tty*) printf '/dev/fm-test\n'; exit 0 ;;
         *pane_current_command*) cat "$D/command"; printf '\n'; exit 0 ;;
         *pane_current_path*)
           if [ -n "${FM_FAKE_CWD_RACE_READY:-}" ]; then
@@ -115,6 +116,16 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  cat > "$fb/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+case "${1:-}" in
+  -t) printf '1 1 1 %s\n' "$(cat "$D/command")" ;;
+  -p) cat "$D/command"; printf '\n' ;;
+esac
+SH
+  chmod +x "$fb/ps"
   cat > "$fb/sleep" <<'SH'
 #!/usr/bin/env bash
 exit 0
