@@ -1,0 +1,5 @@
+ok - fm-send inbox: the payload is recorded durably and only the doorbell is typed
+ok - fm-task-inbox ring: Pi-on-Herdr's lone prompt glyph rings, while a real draft stays protected
+ok - fm-control exit: Pi's returned shell is untouched while its unread handoff remains durable
+ok - fm-control exit: unavailable foreground liveness cannot authorize a stale Pi title
+ok - tmux liveness: a stale Pi title cannot override an idle shell foreground group
