@@ -21,6 +21,8 @@ TEARDOWN="$ROOT/bin/fm-teardown.sh"
 REGISTER="$ROOT/bin/fm-check-register.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-check-security)
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+export FM_TEST_REAL_PS
+FM_TEST_REAL_PS=$(command -v ps)
 REAL_CP=$(command -v cp)
 REAL_MV=$(command -v mv)
 REAL_STAT=$(command -v stat)
@@ -2355,7 +2357,16 @@ test_bootstrap_isolates_incomplete_poll_migration() {
 #!/usr/bin/env bash
 case " $* " in
   *' list-windows '*) printf 'fm-secondmate-a\n' ;;
+  *' display-message '*'#{pane_tty}'*) printf '/dev/pts/fm-test\n' ;;
   *' display-message '*) printf 'node\n' ;;
+esac
+SH
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *' -t '*) printf '%s\n' '101 101 101 node' ;;
+  *' -p 101 -o args= '*) printf '%s\n' node ;;
+  *) exec "${FM_TEST_REAL_PS:?}" "$@" ;;
 esac
 SH
   cat > "$dir/root/bin/fm-fleet-sync.sh" <<'SH'
@@ -2367,7 +2378,7 @@ SH
 #!/usr/bin/env bash
 : > "${FM_TEST_X_POLL_MARKER:?}"
 SH
-  chmod +x "$fakebin/tmux" "$dir/root/bin/fm-fleet-sync.sh" "$dir/root/bin/fm-x-poll.sh"
+  chmod +x "$fakebin/tmux" "$fakebin/ps" "$dir/root/bin/fm-fleet-sync.sh" "$dir/root/bin/fm-x-poll.sh"
 
   set +e
   FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$dir/root" FM_TEST_FLEET_MARKER="$fleet_marker" \

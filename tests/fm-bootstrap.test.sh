@@ -27,6 +27,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+export FM_TEST_REAL_PS
+FM_TEST_REAL_PS=$(command -v ps)
 TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
 
@@ -842,6 +844,7 @@ case "${1:-}" in
   display-message)
     case "$*" in
       *'#{cursor_y}'*) printf '%s\n' 0 ;;
+      *'#{pane_tty}'*) printf '%s\n' /dev/pts/fm-test ;;
       *) printf '%s\n' codex ;;
     esac
     ;;
@@ -850,7 +853,15 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fakebin/tmux"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *' -t '*) printf '%s\n' '101 101 101 codex' ;;
+  *' -p 101 -o args= '*) printf '%s\n' codex ;;
+  *) exec "${FM_TEST_REAL_PS:?}" "$@" ;;
+esac
+SH
+  chmod +x "$fakebin/tmux" "$fakebin/ps"
   printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
 }
 
