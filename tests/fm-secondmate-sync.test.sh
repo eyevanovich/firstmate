@@ -331,6 +331,7 @@ case "$*" in
     sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta
     exit 0
     ;;
+  *display-message*'#{pane_tty}'*) printf '%s\n' /dev/fm-test; exit 0 ;;
   *display-message*'#{pane_current_command}'*) printf '%s\n' codex; exit 0 ;;
   *display-message*'#{pane_id}'*) printf '%s\n' '%1'; exit 0 ;;
   *display-message*'#{cursor_y}'*) printf '%s\n' 0; exit 0 ;;
@@ -343,6 +344,14 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -t) printf '%s\n' '1 1 1 codex' ;;
+  -p) printf '%s\n' 'codex' ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 exit 0

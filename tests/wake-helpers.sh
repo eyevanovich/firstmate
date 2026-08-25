@@ -75,12 +75,23 @@ if [ "${1:-}" = "capture-pane" ]; then
 fi
 if [ "${1:-}" = "display-message" ]; then
   case "$*" in
+    *pane_tty*) printf '%s\n' /dev/fm-test; exit 0 ;;
     *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_CURRENT_COMMAND:-}"; exit 0 ;;
   esac
 fi
 exit 1
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+comm=${FM_FAKE_TMUX_CURRENT_COMMAND:-}
+case "${1:-}" in
+  -t) [ -n "$comm" ] && printf '1 1 1 %s\n' "$comm" ;;
+  -p) [ -n "$comm" ] && printf '%s\n' "$comm" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
   make_fake_crew_state "$fakebin" >/dev/null
   printf '%s\n' "$dir"
 }
