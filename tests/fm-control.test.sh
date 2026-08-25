@@ -146,9 +146,11 @@ set -u
 D=$FM_FAKE_DIR
 case "${1:-}" in
   -t)
+    [ -z "${FM_FAKE_FOREGROUND_UNAVAILABLE:-}" ] || exit 0
     printf '1 1 1 %s\n' "$(cat "$D/foreground")"
     ;;
   -p)
+    [ -z "${FM_FAKE_FOREGROUND_UNAVAILABLE:-}" ] || exit 0
     cat "$D/foreground"
     printf '\n'
     ;;
@@ -718,6 +720,20 @@ test_ambiguous_endpoint_refuses() {
   pass "fm-control exit: an endpoint whose process cannot be attributed refuses"
 }
 
+test_unavailable_foreground_refuses_stale_pi_title() {
+  local dir out rc
+  dir=$(new_case unreadable-pi)
+  add_task "$dir" t1 pi
+  alive_as "$dir" pi
+  out=$(FM_FAKE_FOREGROUND_UNAVAILABLE=1 run_control "$dir" t1 exit); rc=$?
+  expect_code 1 "$rc" "an unavailable semantic foreground probe should refuse"
+  assert_contains "$out" "reads 'unreadable'" \
+    "the refusal should expose the unavailable liveness proof"
+  [ -z "$(literals "$dir")" ] \
+    || fail "a stale Pi title without semantic liveness must receive no bytes"
+  pass "fm-control exit: unavailable foreground liveness cannot authorize a stale Pi title"
+}
+
 test_busy_agent_is_interrupted_before_the_exit_command() {
   local dir out rc
   dir=$(new_case busy)
@@ -953,6 +969,7 @@ test_completed_pi_leaves_unread_handoff_in_shell_untouched
 test_missing_endpoint_refuses
 test_interrupt_refuses_when_no_agent_runs
 test_ambiguous_endpoint_refuses
+test_unavailable_foreground_refuses_stale_pi_title
 test_busy_agent_is_interrupted_before_the_exit_command
 test_idle_agent_is_not_interrupted
 test_interrupt_without_acknowledgement_preserves_busy_state
