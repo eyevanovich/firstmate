@@ -176,6 +176,40 @@ test_pending_composer_skips_ring_advisorily() {
   pass "fm-send inbox: a visibly pending composer skips the ring, and the steer stays durably sent"
 }
 
+test_pi_herdr_prompt_rings_doorbell() {
+  local dir rec log rc prompt draft
+  dir="$TMP_ROOT/pi-herdr-prompt"
+  mkdir -p "$dir"
+  rec="$dir/001.msg"
+  log="$dir/send.log"
+  printf 'schema=fm-task-inbox.v1\nat=2026-08-24T00:00:00Z\n--\nfollow the durable instruction\n' > "$rec"
+  # Exercise the real inbox-ring owner against the Herdr adapter's Pi
+  # classifier contract without needing a live Herdr session in portable CI.
+  . "$ROOT/bin/fm-composer-lib.sh"
+  . "$ROOT/bin/fm-task-inbox-lib.sh"
+  fm_backend_composer_state() {
+    fm_composer_classify_screen $'styled=1\ncursor=0\nidentity=1' \
+      "$FM_FAKE_PI_HERDR_SCREEN" '' $'pi\tidle'
+  }
+  fm_backend_send_text_submit() {
+    printf '%s\n' "$3" >> "$FM_FAKE_PI_HERDR_SEND_LOG"
+    printf 'empty'
+  }
+  prompt=$'────────────────────────\n>\n────────────────────────'
+  FM_FAKE_PI_HERDR_SCREEN=$prompt FM_FAKE_PI_HERDR_SEND_LOG=$log \
+    fm_task_inbox_ring herdr lab:p1 "$rec"; rc=$?
+  expect_code 0 "$rc" "a lone Pi-on-Herdr prompt glyph must allow the inbox doorbell"
+  assert_contains "$(cat "$log")" "Firstmate instruction waiting: list $dir/*.msg" \
+    "the Pi-on-Herdr prompt glyph did not ring the constant doorbell"
+  : > "$log"
+  draft=$'────────────────────────\n> actual draft\n────────────────────────'
+  FM_FAKE_PI_HERDR_SCREEN=$draft FM_FAKE_PI_HERDR_SEND_LOG=$log \
+    fm_task_inbox_ring herdr lab:p1 "$rec"; rc=$?
+  expect_code 1 "$rc" "a real Pi-on-Herdr draft must still protect the composer"
+  [ ! -s "$log" ] || fail "a real Pi-on-Herdr draft should not receive a doorbell:"$'\n'"$(cat "$log")"
+  pass "fm-task-inbox ring: Pi-on-Herdr's lone prompt glyph rings, while a real draft stays protected"
+}
+
 test_failed_ring_is_still_sent() {
   local dir err rc
   dir=$(setup_case ringfail); err="$dir/send.err"
@@ -342,6 +376,7 @@ test_text_steer_rides_inbox
 test_multiline_steer_is_legal
 test_resend_enqueues_new_sequence
 test_pending_composer_skips_ring_advisorily
+test_pi_herdr_prompt_rings_doorbell
 test_failed_ring_is_still_sent
 test_harness_invocations_stay_typed
 test_explicit_target_stays_typed

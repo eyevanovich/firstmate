@@ -58,10 +58,11 @@ verified_adapter_contract() {  # <harness> -> exit command, interrupt key, repea
 
 # --- fake session provider --------------------------------------------------
 #
-# A tmux stub whose whole model is four files under $FM_FAKE_DIR:
-#   command  the pane's foreground process name, which IS the agent-state
-#            classifier's input (bin/backends/tmux.sh).
-#   cwd      the pane's current path.
+# A tmux stub whose whole model is five files under $FM_FAKE_DIR:
+#   command    the pane title, a fallback liveness signal.
+#   foreground the kernel foreground process group, which authoritatively
+#              distinguishes a running agent from its returned shell.
+#   cwd        the pane's current path.
 #   literal  every `send-keys -l` payload, one per line - exactly what was
 #            typed into the composer.
 #   keys     every named key send, one per line.
@@ -96,15 +97,20 @@ case "${1:-}" in
       if [ -z "${FM_FAKE_NEVER_DIES:-}" ] \
          && { [ "$payload" = /exit ] || [ "$payload" = /quit ]; }; then
         printf 'zsh' > "$D/command"
+        printf 'zsh' > "$D/foreground"
       fi
       case "$payload" in
-        *'encode launch-brief'*) cat "$D/becomes" > "$D/command" ;;
+        *'encode launch-brief'*)
+          cat "$D/becomes" > "$D/command"
+          cat "$D/becomes" > "$D/foreground"
+          ;;
       esac
     else
       printf '%s\n' "$payload" >> "$D/keys"
       if [ -n "${FM_FAKE_INTERRUPT_STOPS_AGENT:-}" ] \
          && { [ "$payload" = Escape ] || [ "$payload" = C-c ]; }; then
         printf 'zsh' > "$D/command"
+        printf 'zsh' > "$D/foreground"
       fi
       if [ "$payload" = Escape ] && [ -n "${FM_FAKE_MUSE_LOG:-}" ]; then
         if [ -n "${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" ]; then
@@ -134,12 +140,28 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  cat > "$fb/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+case "${1:-}" in
+  -t)
+    printf '1 1 1 %s\n' "$(cat "$D/foreground")"
+    ;;
+  -p)
+    cat "$D/foreground"
+    printf '\n'
+    ;;
+esac
+SH
+  chmod +x "$fb/ps"
   cat > "$fb/sleep" <<'SH'
 #!/usr/bin/env bash
 if [ -n "${FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK:-}" ] \
    && [ -e "$FM_FAKE_DIR/muse-ack-pending" ]; then
   rm -f "$FM_FAKE_DIR/muse-ack-pending"
   printf 'zsh' > "$FM_FAKE_DIR/command"
+  printf 'zsh' > "$FM_FAKE_DIR/foreground"
   printf '%s\n' '{"schema_version":1,"payload_type":"runtime.session","payload":{"kind":"run","run_id":"run-1","event":{"kind":"terminal","terminal":"cancelled","reason":null}}}' >> "$FM_FAKE_MUSE_LOG"
 fi
 exit 0
@@ -155,6 +177,7 @@ new_case() {
   : > "$dir/fake/literal"
   : > "$dir/fake/keys"
   printf 'zsh' > "$dir/fake/command"
+  printf 'zsh' > "$dir/fake/foreground"
   printf 'claude' > "$dir/fake/becomes"
   make_tmux_stub "$dir" >/dev/null
   printf '%s\n' "$dir"
@@ -202,6 +225,7 @@ run_control() {
 
 alive_as() {  # <case-dir> <command-name>
   printf '%s' "$2" > "$1/fake/command"
+  printf '%s' "$2" > "$1/fake/foreground"
 }
 
 literals() {  # <case-dir>
@@ -628,6 +652,37 @@ test_already_stopped_exit_is_idempotent() {
   pass "fm-control exit: an already-stopped agent is idempotent success with no bytes sent"
 }
 
+test_completed_pi_leaves_unread_handoff_in_shell_untouched() {
+  local dir inbox out rc
+  dir=$(new_case pi-completed)
+  add_task "$dir" t1 pi
+  alive_as "$dir" pi
+  out=$(run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "a live Pi agent should accept its verified exit command"$'\n'"$out"
+  [ "$(literals "$dir")" = /quit ] \
+    || fail "a live Pi agent should receive /quit"
+  [ "$(cat "$dir/fake/foreground")" = zsh ] \
+    || fail "the modeled Pi exit should return the terminal to its shell"
+
+  inbox="$dir/home/state/t1.inbox/001.msg"
+  mkdir -p "$(dirname "$inbox")"
+  printf 'schema=fm-task-inbox.v1\nat=2026-08-25T00:00:00Z\n--\nnext delivery instruction\n' > "$inbox"
+  : > "$dir/fake/literal"
+  # Tmux's title can still read Pi after its process exited, but the kernel
+  # foreground group proves the terminal is back at its shell.
+  printf 'pi' > "$dir/fake/command"
+  out=$(run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "recovery of Pi's returned shell should be idempotent"$'\n'"$out"
+  assert_contains "$out" "already-stopped t1" \
+    "the shell must be recognized as an already-stopped Pi session"
+  [ -z "$(literals "$dir")" ] \
+    || fail "recovery must not type /quit into Pi's returned shell"
+  if [ ! -f "$inbox" ] || ! grep -Fqx 'next delivery instruction' "$inbox"; then
+    fail "the unread delivery instruction must remain durable"
+  fi
+  pass "fm-control exit: Pi's returned shell is untouched while its unread handoff remains durable"
+}
+
 test_missing_endpoint_refuses() {
   local dir out rc
   dir=$(new_case gone)
@@ -894,6 +949,7 @@ test_verb_allowlist_is_closed
 test_resume_is_refused_with_its_reason
 test_relaunch_only_flags_are_rejected_on_other_verbs
 test_already_stopped_exit_is_idempotent
+test_completed_pi_leaves_unread_handoff_in_shell_untouched
 test_missing_endpoint_refuses
 test_interrupt_refuses_when_no_agent_runs
 test_ambiguous_endpoint_refuses

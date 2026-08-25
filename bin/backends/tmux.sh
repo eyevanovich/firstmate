@@ -256,12 +256,11 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # `missing`; any other inventory or pane read failure is `unreadable`, so a
 # transient tmux problem never licenses a duplicate.
 #
-# The verdict combines two independent name sources rather than trusting either
-# alone. Either source naming a verified harness is enough for `alive`, because
-# a false `dead` is the one outcome that can launch a duplicate agent onto a
-# live worktree, while the foreground process group - when it is readable - is
-# authoritative for the negative verdicts, since it is the only source that can
-# distinguish a truly idle pane from a rewritten process title.
+# The foreground process group is the semantic liveness source. A verified
+# harness name there proves `alive`, a group of only shells proves `dead`, and
+# every other readable group is `ambiguous`. The pane title is only a fallback
+# when that process-group read is unavailable, because it can remain Pi after
+# the agent exits and returns the terminal to its shell.
 fm_backend_tmux_agent_state() {  # <target>
   local target=$1 comm session window windows inventory_status
   local foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
@@ -317,23 +316,24 @@ EOF
 $argv0s
 EOF
 
-  comm=$(fm_backend_tmux_current_command "$target") || {
-    printf 'unreadable'
-    return 0
-  }
-  if [ "$(fm_backend_tmux_classify_process_name "$comm")" = agent ]; then
-    printf 'alive'
-    return 0
-  fi
-
-  # A readable foreground process group settles the negative verdicts: only a
-  # group that is nothing but shells is confidently agent-free.
+  # A readable foreground process group settles every verdict. In particular,
+  # a stale pane title must never override a terminal that has returned to its
+  # shell after a completed agent session.
   if [ "$fg_seen" -eq 1 ]; then
     if [ "$fg_other" -eq 0 ] && [ "$fg_shell" -eq 1 ]; then
       printf 'dead'
     else
       printf 'ambiguous'
     fi
+    return 0
+  fi
+
+  comm=$(fm_backend_tmux_current_command "$target") || {
+    printf 'unreadable'
+    return 0
+  }
+  if [ "$(fm_backend_tmux_classify_process_name "$comm")" = agent ]; then
+    printf 'alive'
     return 0
   fi
 
