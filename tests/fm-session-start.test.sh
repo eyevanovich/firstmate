@@ -226,7 +226,24 @@ for argument in "$@"; do
   previous=$argument
 done
 case "$*" in
+  -t*)
+    mode=${FM_FAKE_TMUX_MODE:-unreadable}
+    [ "$mode" != unreadable ] || exit 1
+    [ -e "${FM_FAKE_TMUX_SPAWNED:-/nonexistent}" ] && mode=pi
+    [ "$mode" != shell ] || mode=zsh
+    [ "$mode" != ambiguous ] || mode=node
+    printf '424242 424242 424242 %s\n' "$mode"
+    exit 0
+    ;;
   *"comm="*)
+    if [ "$pid" = 424242 ]; then
+      mode=${FM_FAKE_TMUX_MODE:-unreadable}
+      [ -e "${FM_FAKE_TMUX_SPAWNED:-/nonexistent}" ] && mode=pi
+      [ "$mode" != shell ] || mode=zsh
+      [ "$mode" != ambiguous ] || mode=node
+      printf '%s\n' "$mode"
+      exit 0
+    fi
     if [ -z "${FM_FAKE_HARNESS_PID:-}" ] || [ "$pid" = "$FM_FAKE_HARNESS_PID" ] \
       || [ "$pid" = "${FM_FAKE_LIVE_HOLDER_PID:-}" ]; then
       printf '/usr/local/bin/%s\n' "$harness"
@@ -236,6 +253,14 @@ case "$*" in
     exit 0
     ;;
   *"args="*)
+    if [ "$pid" = 424242 ]; then
+      mode=${FM_FAKE_TMUX_MODE:-unreadable}
+      [ -e "${FM_FAKE_TMUX_SPAWNED:-/nonexistent}" ] && mode=pi
+      [ "$mode" != shell ] || mode=zsh
+      [ "$mode" != ambiguous ] || mode=node
+      printf '%s\n' "$mode"
+      exit 0
+    fi
     if [ -z "${FM_FAKE_HARNESS_PID:-}" ] || [ "$pid" = "$FM_FAKE_HARNESS_PID" ] \
       || [ "$pid" = "${FM_FAKE_LIVE_HOLDER_PID:-}" ]; then
       printf '%s\n' "$harness"
@@ -351,6 +376,7 @@ case "${1:-}" in
     fi
     if [ -e "$spawned" ]; then
       case "$format" in
+        *pane_tty*) printf '%s\n' /dev/fm-test ;;
         *pane_current_command*) printf '%s\n' node ;;
         *) printf '%%1\n' ;;
       esac
@@ -358,11 +384,11 @@ case "${1:-}" in
     fi
     case "$mode" in
       ambiguous)
-        case "$format" in *pane_current_command*) printf '%s\n' node ;; *) printf '%%1\n' ;; esac
+        case "$format" in *pane_tty*) printf '%s\n' /dev/fm-test ;; *pane_current_command*) printf '%s\n' node ;; *) printf '%%1\n' ;; esac
         exit 0
         ;;
       shell)
-        case "$format" in *pane_current_command*) printf '%s\n' zsh ;; *) printf '%%1\n' ;; esac
+        case "$format" in *pane_tty*) printf '%s\n' /dev/fm-test ;; *pane_current_command*) printf '%s\n' zsh ;; *) printf '%%1\n' ;; esac
         exit 0
         ;;
       missing)
