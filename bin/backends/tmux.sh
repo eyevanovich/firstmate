@@ -221,8 +221,8 @@ fm_backend_tmux_classify_process_name() {  # <path> [argv0] -> agent|shell|other
 # does, or they will describe some other pane entirely.
 fm_backend_tmux_foreground_comms() {  # <target>
   local target=$1 tty pid pgid tpgid comm
-  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
-  [ -n "$tty" ] || return 0
+  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 1
+  [ -n "$tty" ] || return 1
   LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
     | while read -r pid pgid tpgid comm; do
         [ -n "$comm" ] || continue
@@ -233,8 +233,8 @@ fm_backend_tmux_foreground_comms() {  # <target>
 
 fm_backend_tmux_foreground_argv0s() {  # <target>
   local target=$1 tty pid pgid tpgid comm args argv0
-  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
-  [ -n "$tty" ] || return 0
+  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 1
+  [ -n "$tty" ] || return 1
   LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
     | while read -r pid pgid tpgid comm; do
         [ -n "$comm" ] || continue
@@ -256,14 +256,13 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # `missing`; any other inventory or pane read failure is `unreadable`, so a
 # transient tmux problem never licenses a duplicate.
 #
-# The verdict combines two independent name sources rather than trusting either
-# alone. Either source naming a verified harness is enough for `alive`, because
-# a false `dead` is the one outcome that can launch a duplicate agent onto a
-# live worktree, while the foreground process group - when it is readable - is
-# authoritative for the negative verdicts, since it is the only source that can
-# distinguish a truly idle pane from a rewritten process title.
+# The foreground process group is the semantic liveness source. A verified
+# harness name there proves `alive`, a group of only shells proves `dead`, and
+# every other readable group is `ambiguous`. An unavailable or empty semantic
+# foreground read is `unreadable`; the pane title cannot establish liveness
+# because it can remain Pi after the agent exits and returns to its shell.
 fm_backend_tmux_agent_state() {  # <target>
-  local target=$1 comm session window windows inventory_status
+  local target=$1 session window windows inventory_status
   local foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
   case "$target" in
     *:*:*|'':*|*:'') printf 'unreadable'; return 0 ;;
@@ -293,7 +292,10 @@ fm_backend_tmux_agent_state() {  # <target>
     return 0
   fi
 
-  foreground=$(fm_backend_tmux_foreground_comms "$target")
+  foreground=$(fm_backend_tmux_foreground_comms "$target") || {
+    printf 'unreadable'
+    return 0
+  }
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     fg_seen=1
@@ -306,7 +308,10 @@ fm_backend_tmux_agent_state() {  # <target>
 $foreground
 EOF
 
-  argv0s=$(fm_backend_tmux_foreground_argv0s "$target")
+  argv0s=$(fm_backend_tmux_foreground_argv0s "$target") || {
+    printf 'unreadable'
+    return 0
+  }
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     if [ "$(fm_backend_tmux_classify_process_name '' "$name")" = agent ]; then
@@ -317,17 +322,9 @@ EOF
 $argv0s
 EOF
 
-  comm=$(fm_backend_tmux_current_command "$target") || {
-    printf 'unreadable'
-    return 0
-  }
-  if [ "$(fm_backend_tmux_classify_process_name "$comm")" = agent ]; then
-    printf 'alive'
-    return 0
-  fi
-
-  # A readable foreground process group settles the negative verdicts: only a
-  # group that is nothing but shells is confidently agent-free.
+  # A readable foreground process group settles every verdict. In particular,
+  # a stale pane title must never override a terminal that has returned to its
+  # shell after a completed agent session.
   if [ "$fg_seen" -eq 1 ]; then
     if [ "$fg_other" -eq 0 ] && [ "$fg_shell" -eq 1 ]; then
       printf 'dead'
@@ -337,13 +334,7 @@ EOF
     return 0
   fi
 
-  case "$comm" in
-    '') printf 'unreadable'; return 0 ;;
-  esac
-  case "$(fm_backend_tmux_classify_process_name "$comm")" in
-    shell) printf 'dead' ;;
-    *) printf 'ambiguous' ;;
-  esac
+  printf 'unreadable'
 }
 
 # Backward-compatible three-state view for callers that only need a yes/no

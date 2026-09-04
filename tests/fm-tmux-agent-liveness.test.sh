@@ -222,6 +222,16 @@ wait_for_state "$SESSION:idle" dead \
   || fail "an idle shell pane must classify dead"
 pass "tmux liveness: an idle shell pane classifies dead"
 
+# The title may remain Pi after a completed session returns to its shell.
+# The real foreground group must carry the negative verdict in that divergence.
+(
+  fm_backend_tmux_current_command() { printf 'pi\n'; }
+  title_classifies_agent "$SESSION:idle" \
+    && ! comms_classify_agent "$SESSION:idle" \
+    && [ "$(fm_backend_agent_state tmux "$SESSION:idle")" = dead ]
+) || fail "a stale Pi title over an idle shell foreground group must classify dead"
+pass "tmux liveness: a stale Pi title cannot override an idle shell foreground group"
+
 # --- a harness-named BACKGROUND process must not fake an agent --------------
 # Scoping to the foreground process group is what prevents this false alive; a
 # descendant walk of the pane would report this pane as running an agent.

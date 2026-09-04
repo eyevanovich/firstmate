@@ -9,6 +9,8 @@ The **control plane** is [`bin/fm-control.sh`](../bin/fm-control.sh): allowliste
 
 The split exists because the data plane's marking is exactly right for a message and exactly wrong for a lifecycle command.
 A routing-marked `/quit` arrives as ordinary chat - `[fm-from-firstmate] /quit` - which the agent reasons about instead of executing.
+The data plane's durable inbox record is delivery authority, while its terminal doorbell is only a best-effort notification and proves neither agent liveness nor acknowledgement.
+Lifecycle commands must go through the control plane, because a completed Pi session returns its terminal to a shell where typed `/quit` would be an unknown shell command even though the unread inbox record remains durable.
 The failure repeated across harnesses and homes, and the workaround (remember to use an unmarked send for agent-control commands, and improvise the right key or command per harness) lived only in agent prose, so it failed again every time a session did not happen to recall it.
 
 ## What the control plane owns
@@ -99,6 +101,8 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
+- Tmux lifecycle decisions use the semantic foreground process group rather than the pane title.
+  A verified harness in that group is alive, shells alone are dead, and an unavailable or empty foreground read is unreadable; a stale Pi title after Pi returns to its shell cannot authorize lifecycle input or a duplicate relaunch.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
 
 ## Capability matrix
