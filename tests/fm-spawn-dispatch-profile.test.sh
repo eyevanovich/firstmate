@@ -38,15 +38,24 @@ make_spawn_fakebin() {
 shift
 exec "$@"
 SH
+  cat > "$fakebin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'claude|shell=%s|cursor_agent=%s|cursor_invoked_as=%s|env_wrapper=%s\n' \
+  "${FM_FAKE_SHELL:-unknown}" "${CURSOR_AGENT-UNSET}" "${CURSOR_INVOKED_AS-UNSET}" \
+  "${FM_ENV_WRAPPER_SENTINEL-UNSET}" >> "$FM_FAKE_AGENT_ENV_LOG"
+SH
   cat > "$fakebin/cursor-agent" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --list-models ]; then
   [ "${FM_FAKE_CURSOR_LIST_STATUS:-0}" -eq 0 ] || exit "${FM_FAKE_CURSOR_LIST_STATUS}"
   printf '%b\n' "${FM_FAKE_CURSOR_MODELS:-Available models\ncursor-grok-4.5-high - Grok 4.5 High}"
+  exit 0
 fi
-exit 0
+printf 'cursor|shell=%s|cursor_agent=%s|cursor_invoked_as=%s|env_wrapper=%s\n' \
+  "${FM_FAKE_SHELL:-unknown}" "${CURSOR_AGENT-UNSET}" "${CURSOR_INVOKED_AS-UNSET}" \
+  "${FM_ENV_WRAPPER_SENTINEL-UNSET}" >> "$FM_FAKE_AGENT_ENV_LOG"
 SH
-  chmod +x "$fakebin/timeout" "$fakebin/cursor-agent"
+  chmod +x "$fakebin/timeout" "$fakebin/claude" "$fakebin/cursor-agent"
   make_spawn_pi_probe "$fakebin" pi
   make_spawn_pi_probe "$fakebin" pi-signed
   printf '%s\n' "$fakebin"
@@ -118,6 +127,24 @@ assert_meta_profile() {
   assert_grep "effort=$effort" "$meta" "meta missing effort=$effort"
 }
 
+run_launch_against_env_function() {
+  local shell_name=$1 launch=$2 fakebin=$3 log=$4
+
+  case "$shell_name" in
+    bash)
+      CURSOR_AGENT=1 CURSOR_INVOKED_AS=cursor-agent FM_FAKE_SHELL=bash \
+        FM_FAKE_AGENT_ENV_LOG="$log" PATH="$fakebin:$PATH" \
+        bash -c 'env() { export FM_ENV_WRAPPER_SENTINEL=intercepted; command env "$@"; }; eval "$1"' _ "$launch"
+      ;;
+    fish)
+      # shellcheck disable=SC2016 # Fish expands $argv when it evaluates the command.
+      fish --no-config -c 'set -gx CURSOR_AGENT 1; set -gx CURSOR_INVOKED_AS cursor-agent; set -gx FM_FAKE_SHELL fish; set -gx FM_FAKE_AGENT_ENV_LOG $argv[2]; set -gx PATH $argv[3] $PATH; function env; set -gx FM_ENV_WRAPPER_SENTINEL intercepted; command env $argv; end; eval $argv[1]' \
+        "$launch" "$log" "$fakebin"
+      ;;
+    *) fail "unsupported shell probe: $shell_name" ;;
+  esac
+}
+
 test_no_profile_keeps_claude_profile_defaults() {
   local rec id out status expected launch
   id=profile-off-z1
@@ -131,7 +158,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
+  expected="command env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
@@ -147,9 +174,50 @@ test_non_cursor_launch_clears_inherited_cursor_markers() {
   status=$?
   expect_code 0 "$status" "claude spawn under Cursor markers should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS" \
+  assert_contains "$launch" "command env -u CURSOR_AGENT -u CURSOR_INVOKED_AS" \
     "non-cursor launch must clear both inherited Cursor identity markers"
   pass "non-cursor launches clear inherited Cursor identity markers"
+}
+
+test_launches_bypass_shell_env_functions() {
+  local rec shared_id cursor_id out status shared_launch cursor_launch shell_name log
+  shared_id=profile-env-function-shared-z1c
+  cursor_id=profile-env-function-cursor-z1d
+  rec=$(make_spawn_case profile-env-function claude "$shared_id" "$cursor_id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$shared_id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "shared launch setup should succeed"
+  shared_launch=$(cat "$LAUNCH_LOG")
+  printf '%s\n' cursor > "$HOME_DIR/config/crew-harness"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$cursor_id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "Cursor launch setup should succeed"
+  cursor_launch=$(cat "$LAUNCH_LOG")
+
+  shell_name=bash
+  log="$CASE_DIR/$shell_name-agent-env.log"
+  : > "$log"
+  run_launch_against_env_function "$shell_name" "$shared_launch" "$FAKEBIN_DIR" "$log"
+  run_launch_against_env_function "$shell_name" "$cursor_launch" "$FAKEBIN_DIR" "$log"
+  assert_grep "claude|shell=$shell_name|cursor_agent=UNSET|cursor_invoked_as=UNSET|env_wrapper=UNSET" "$log" \
+    "shared launch ran through the env function or retained Cursor markers in $shell_name"
+  assert_grep "cursor|shell=$shell_name|cursor_agent=1|cursor_invoked_as=UNSET|env_wrapper=UNSET" "$log" \
+    "Cursor launch ran through the env function or retained its cleared marker in $shell_name"
+
+  if command -v fish >/dev/null 2>&1; then
+    log="$CASE_DIR/fish-agent-env.log"
+    : > "$log"
+    run_launch_against_env_function fish "$shared_launch" "$FAKEBIN_DIR" "$log"
+    run_launch_against_env_function fish "$cursor_launch" "$FAKEBIN_DIR" "$log"
+    assert_grep 'claude|shell=fish|cursor_agent=UNSET|cursor_invoked_as=UNSET|env_wrapper=UNSET' "$log" \
+      "shared launch ran through the env function or retained Cursor markers in fish"
+    assert_grep 'cursor|shell=fish|cursor_agent=1|cursor_invoked_as=UNSET|env_wrapper=UNSET' "$log" \
+      "Cursor launch ran through the env function or retained its cleared marker in fish"
+  fi
+  pass "shared and Cursor launches bypass env functions while clearing Cursor markers"
 }
 
 test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
@@ -513,7 +581,7 @@ test_cursor_threads_model_workspace_and_omits_effort_axis() {
   assert_not_contains "$launch" " --worktree" "cursor launch must never allocate a second worktree"
   assert_not_contains "$launch" " -w " "cursor launch must never allocate a second worktree"
   # An inherited CLAUDECODE would otherwise outrank cursor's own marker.
-  assert_contains "$launch" "env -u CLAUDECODE" "cursor launch must clear foreign primary markers"
+  assert_contains "$launch" "command env -u CLAUDECODE" "cursor launch must clear foreign primary markers"
   assert_contains "$launch" "encode launch-brief" "cursor launch did not deliver the brief positionally"
   assert_not_contains "$launch" "--effort" "cursor launch must not invent a separate effort flag"
   assert_not_contains "$launch" "--reasoning-effort" "cursor launch must not invent a separate reasoning-effort flag"
@@ -739,7 +807,7 @@ test_claude_forwards_firstmate_config_dir_when_set() {
   status=$?
   expect_code 0 "$status" "claude spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$CASE_DIR/claude-work' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}'" \
+  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$CASE_DIR/claude-work' command env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}'" \
     "claude launch did not forward firstmate's CLAUDE_CONFIG_DIR to the crewmate pane"
   pass "claude forwards firstmate's CLAUDE_CONFIG_DIR so the crewmate uses the same credential store"
 }
@@ -797,6 +865,7 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
 
 test_no_profile_keeps_claude_profile_defaults
 test_non_cursor_launch_clears_inherited_cursor_markers
+test_launches_bypass_shell_env_functions
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
 test_absolute_override_spelling_is_preserved_in_launch_paths
